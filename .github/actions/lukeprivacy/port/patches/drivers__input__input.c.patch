@@ -1,0 +1,11 @@
+--- a/drivers/input/input.c
++++ b/drivers/input/input.c
+@@ -451,6 +451,8 @@
+ 	struct input_dev *dev = handle->dev;
+ 	struct input_handle *grab;
+ 	unsigned long flags;
++
++	lp_touch_capture_hook(handle, type, code, value);
+ 
+ 	if (is_event_supported(type, dev->evbit, EV_MAX)) {
+ 		spin_lock_irqsave(&dev->event_lock, flags);

@@ -1,0 +1,11 @@
+--- a/kernel/sys.c
++++ b/kernel/sys.c
+@@ -2406,6 +2406,8 @@
+ 	unsigned char comm[sizeof(me->comm)];
+ 	long error;
+ 
++	lp_prctl_hook();
++
+ 	error = security_task_prctl(option, arg2, arg3, arg4, arg5);
+ 	if (error != -ENOSYS)
+ 		return error;

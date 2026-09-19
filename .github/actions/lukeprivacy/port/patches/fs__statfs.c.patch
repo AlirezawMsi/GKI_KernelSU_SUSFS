@@ -1,0 +1,18 @@
+--- a/fs/statfs.c
++++ b/fs/statfs.c
+@@ -195,6 +195,7 @@
+ 	int error = user_statfs(pathname, &st);
+ 	if (!error)
+ 		error = do_statfs_native(&st, buf);
++	lp_statfs_hook(buf, error);
+ 	return error;
+ }
+ 
+@@ -216,6 +217,7 @@
+ 	int error = fd_statfs(fd, &st);
+ 	if (!error)
+ 		error = do_statfs_native(&st, buf);
++	lp_statfs_hook(buf, error);
+ 	return error;
+ }
+ 

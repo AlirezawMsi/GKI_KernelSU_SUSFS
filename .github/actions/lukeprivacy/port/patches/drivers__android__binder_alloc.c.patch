@@ -1,0 +1,36 @@
+--- a/drivers/android/binder_alloc.c
++++ b/drivers/android/binder_alloc.c
+@@ -906,6 +906,8 @@
+ 	int buffers, page_count;
+ 	struct binder_buffer *buffer;
+ 
++	lp_binder_alloc_release_hook(alloc);
++
+ 	buffers = 0;
+ 	binder_alloc_lock(alloc);
+ 	BUG_ON(alloc->vma);
+@@ -1169,6 +1171,7 @@
+ 	mmgrab(alloc->mm);
+ 	binder_alloc_lock_init(alloc);
+ 	INIT_LIST_HEAD(&alloc->buffers);
++	lp_binder_alloc_init_hook(alloc);
+ }
+ 
+ int binder_alloc_shrinker_init(void)
+@@ -1240,6 +1243,8 @@
+ 				 const void __user *from,
+ 				 size_t bytes)
+ {
++	lp_binder_copy_to_buffer_hook(alloc, buffer, buffer_offset, from, bytes);
++
+ 	if (!check_buffer(alloc, buffer, buffer_offset, bytes))
+ 		return bytes;
+ 
+@@ -1302,6 +1307,7 @@
+ 				void *src,
+ 				size_t bytes)
+ {
++	lp_binder_copy_to_buffer_gnss_hook(src, bytes);
+ 	return binder_alloc_do_buffer_copy(alloc, true, buffer, buffer_offset,
+ 					   src, bytes);
+ }

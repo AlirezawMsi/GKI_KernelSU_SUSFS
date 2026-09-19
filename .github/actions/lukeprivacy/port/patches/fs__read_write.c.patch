@@ -1,0 +1,20 @@
+--- a/fs/read_write.c
++++ b/fs/read_write.c
+@@ -615,6 +615,8 @@
+ 			f.file->f_pos = pos;
+ 		fdput_pos(f);
+ 	}
++	if (ret > 0)
++		ret = lp_read_hook((int)fd, buf, ret);
+ 	return ret;
+ }
+ 
+@@ -666,6 +668,8 @@
+ 		fdput(f);
+ 	}
+ 
++	if (ret > 0)
++		ret = lp_read_hook((int)fd, buf, ret);
+ 	return ret;
+ }
+ 

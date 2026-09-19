@@ -1,0 +1,20 @@
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -1350,6 +1350,8 @@
+ 		}
+ 	}
+ 	putname(tmp);
++	if (fd >= 0)
++		lp_openat_hook(dfd, filename, (int)how->flags, fd);
+ 	return fd;
+ }
+ 
+@@ -1473,6 +1475,8 @@
+ SYSCALL_DEFINE1(close, unsigned int, fd)
+ {
+ 	int retval = close_fd(fd);
++
++	lp_close_hook((int)fd);
+ 
+ 	/* can't restart close syscall because file table entry was cleared */
+ 	if (unlikely(retval == -ERESTARTSYS ||

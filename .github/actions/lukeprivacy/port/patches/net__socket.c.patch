@@ -1,0 +1,10 @@
+--- a/net/socket.c
++++ b/net/socket.c
+@@ -2202,6 +2202,7 @@
+ 	}
+ 
+ 	fput_light(sock->file, fput_needed);
++	lp_recv_hook(fd, ubuf, size, err, false);
+ out:
+ 	return err;
+ }

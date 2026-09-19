@@ -1,0 +1,5 @@
+# LukePrivacy built-in device-id compat layer — defconfig fragment.
+# Appended to arch/arm64/configs/gki_defconfig by apply.sh (or merge via
+# scripts/kconfig/merge_config.sh). Built-in (=y), NOT a module (=m won't work:
+# the call-sites are compiled into vmlinux core objects).
+CONFIG_LUKEPRIVACY=y

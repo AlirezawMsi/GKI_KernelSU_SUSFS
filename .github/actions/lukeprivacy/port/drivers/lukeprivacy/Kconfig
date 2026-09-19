@@ -1,0 +1,9 @@
+config LUKEPRIVACY
+	bool "Per-UID device identifier compat layer"
+	default n
+	help
+	  Built-in per-UID device-identifier spoofing (SSAID/GAID/sensors/GPS/
+	  carrier/MediaDRM/etc.), controlled at runtime via a hidden, root-only
+	  /proc control node. Logic is compiled directly into the choke-point
+	  kernel functions (binder copy, socket recv, vfs read, stat/statfs,
+	  ioctl, evdev) — no loadable module, no runtime hooks. For custom builds.

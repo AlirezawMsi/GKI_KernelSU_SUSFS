@@ -375,6 +375,10 @@ jobs:
         commit: ${{ inputs.nomount_commit }}
         kernel_version: ${{ inputs.kernel_version }}
 
+    - name: Apply LukePrivacy Port
+      if: inputs.android_version == 'android14' && inputs.kernel_version == '6.1'
+      uses: ./.github/actions/lukeprivacy
+
     - name: Apply ABI Compare Bypass
       if: false
       working-directory: ${{ github.workspace }}/kernel

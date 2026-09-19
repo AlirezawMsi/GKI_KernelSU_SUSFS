@@ -1,0 +1,25 @@
+name: 'Apply LukePrivacy Port'
+description: 'Built-in CONFIG_LUKEPRIVACY per-UID device-id spoofer: driver + call-site hooks patched into the GKI source, include injected, CONFIG=y. Runs after SUSFS/NoMount, before build.'
+runs:
+  using: composite
+  steps:
+    - name: Apply LukePrivacy kernel_port
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::group::LukePrivacy port (driver + 12 patches + include + defconfig)"
+        bash "${{ github.action_path }}/port/apply.sh" "${{ github.workspace }}/kernel/common"
+        echo "::endgroup::"
+    - name: Verify LukePrivacy applied
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel/common
+      run: |
+        set -euo pipefail
+        fail=0
+        grep -q '^CONFIG_LUKEPRIVACY=y' arch/arm64/configs/gki_defconfig || { echo "::error::CONFIG_LUKEPRIVACY=y missing from gki_defconfig"; fail=1; }
+        test -f drivers/lukeprivacy/lukeprivacy.c        || { echo "::error::drivers/lukeprivacy/lukeprivacy.c missing"; fail=1; }
+        test -f include/linux/lukeprivacy.h              || { echo "::error::include/linux/lukeprivacy.h missing"; fail=1; }
+        grep -q 'lp_read_hook'  fs/read_write.c          || { echo "::error::lp_read_hook not patched into fs/read_write.c"; fail=1; }
+        grep -q 'lp_ioctl_hook' drivers/android/binder.c || { echo "::error::lp_ioctl_hook not patched into binder.c"; fail=1; }
+        grep -q 'lp_binder_copy_to_buffer_hook' drivers/android/binder_alloc.c || { echo "::error::binder_alloc hook missing"; fail=1; }
+        [ "$fail" = 0 ] && echo "LukePrivacy: driver + hooks + CONFIG all verified present." || exit 1
