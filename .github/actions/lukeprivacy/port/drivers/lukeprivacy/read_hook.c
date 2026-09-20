@@ -26,6 +26,8 @@
 #include <linux/user_namespace.h>
 #include <linux/sched.h>
 #include <linux/rcupdate.h>
+#include <linux/ptrace.h>            /* current_pt_regs() — recover the read() count */
+#include <linux/sched/task_stack.h> /* task_pt_regs() backing current_pt_regs() */
 
 #include "profile.h"
 #include "uaccess.h"
@@ -76,11 +78,17 @@ enum fd_type {
 
 /* Fake content for /proc/version. SUSFS-style: drop "Wild" kernel suffix +
  * "build-user@build-host" + epoch-0 timestamp; emit stock-looking Pixel 6
- * build-user@build-host with current susfs spoofed build date.
+ * kernel-builder@kbuild-pixel-6 with current susfs spoofed build date.
  * Length kept ≤ realistic /proc/version output (~280 bytes); apps reading
  * with buffer ≥ FAKE_VERSION_LEN get exactly this, shorter readers truncate
  * cleanly (no "real bytes after our fake" leak because we always overwrite
  * up to ret bytes capped at FAKE_VERSION_LEN). */
+/* MUST match the uname spoof EXACTLY (release + git-hash + build date), or an app
+ * comparing uname -r vs /proc/version detects the mismatch (2026-09-20: was stale at
+ * 6.1.99-gc8ed7156d/Mar-2025 while uname spoofs 6.1.145-...-ab14219743/Oct-6-2025 —
+ * a detectable tamper tell; manual registers suspended on it). See memory
+ * kernel-version-spoof-mismatch. Keep this string in lockstep with whatever sets the
+ * spoofed uname (SUSFS/uname spoof) — release, git hash, and the "#1 SMP PREEMPT <date>". */
 static const char FAKE_PROC_VERSION[] =
     "Linux version 6.1.145-android14-11-gc1de4747ac59-ab14219743 "
     "(build-user@build-host) "
@@ -520,13 +528,24 @@ long lp_read_hook(int fd, char __user *buf, long ret)
      * truncation. Source content is compile-time-const, no kalloc, no
      * sleep — safe in choke-point context. */
     if (type == FD_TYPE_PROC_VERSION) {
-        size_t n = (size_t)ret;
-        if (n > FAKE_PROC_VERSION_LEN) n = FAKE_PROC_VERSION_LEN;
+        /* Deliver the FULL fake banner. The release + "#1 SMP PREEMPT <date>"
+         * MUST match the spoofed uname byte-for-byte (uname -a exposes both) —
+         * capping at the real file length `ret` truncated the date mid-string
+         * (e.g. "...Mon Oc"), which is itself a uname-vs-/proc/version tell
+         * (2026-09-20). Cap instead at the CALLER's buffer size = read()/
+         * pread64() arg #3, preserved in the saved user regs (x2 on arm64),
+         * so the whole fake is delivered whenever the buffer can hold it (the
+         * universal case: /proc reads use a page-sized buffer) while we never
+         * return more bytes than the caller requested (a read() returning
+         * > count is impossible and would itself be a tell / overflow). */
+        size_t count = (size_t)current_pt_regs()->regs[2];
+        size_t n = FAKE_PROC_VERSION_LEN;
+        if (n > count) n = count;
         if (n > 0) lp_copy_to_user(ubuf, FAKE_PROC_VERSION, n);
         g_proc_version_spoofed++;
         /* Mirror into proc_version_uid_repl when UID-redirect flag is set. */
         if (g_profile.proc_version_uid_redirect_enabled) g_proc_version_uid_repl++;
-        return ret;
+        return (long)n;
     }
     if (type == FD_TYPE_PROC_CPUINFO) {
         size_t n = (size_t)ret;
