@@ -2555,6 +2555,60 @@ static bool try_hide_dev_settings(char *buf, size_t bytes)
     return modified;
 }
 
+/* USB_STATE sticky-broadcast cloak — ZCA adb plugin (C77552tc) vectors #2 (usb)
+ * and #3 (usb_adb). The plugin does
+ *   context.registerReceiver(null, IntentFilter("android.hardware.usb.action.USB_STATE"))
+ * then reads intent.getExtras().getBoolean("connected") and getBoolean("adb").
+ * The sticky Intent is delivered to the app (uid>=10000) in this binder reply
+ * with its extras Bundle inline. We corrupt the extra KEYS "connected"/"adb"
+ * (same trick as try_hide_dev_settings): the app's getBoolean(key,false) then
+ * misses the entry and returns the default false -> usb:0, usb_adb:0. That is
+ * coherent with the spoofed-unplugged battery (ZCA `bat` plugin) — a normal
+ * phone that isn't plugged into a debug host.
+ *
+ * Confirmed-open tell 2026-09-20: on this USB-tethered farm device
+ * sys.usb.config=adb + physical USB -> both vectors read 1, giving the
+ * {usb:1,adb:1,usb_adb:1} instant-ban signature. adb_hide (Settings path)
+ * only closed vector #1; this closes #2/#3.
+ *
+ * Anchored on the unique 37-char action literal so unrelated parcels are never
+ * touched; exact str_len match avoids "host_connected"(14)/"adb_enabled"(11)
+ * etc. System (uid<10000) is bypassed so UsbManager/SystemUI keep working.
+ * Gated by adb_hide_enabled — one toggle (set_adb_hide:1) for the whole ZCA
+ * adb surface (vectors #1+#2+#3). */
+static bool try_hide_usb_state(char *buf, size_t bytes)
+{
+    __u32 uid = from_kuid(&init_user_ns, current_uid());
+    if (uid < 10000) return false;
+    if (!g_profile.adb_hide_enabled) return false;
+
+    /* Anchor: the sticky Intent's action string. Near-zero false-positive. */
+    if (lp_find_utf16le(buf, bytes,
+            "android.hardware.usb.action.USB_STATE", 37) < 0)
+        return false;
+
+    bool modified = false;
+    for (size_t off = 0; off + 8 < bytes; off += 4) {
+        __s32 str_len = *(__s32 *)(buf + off);
+        __u16 *u = (__u16 *)(buf + off + 4);
+
+        // "connected" (9 chars) -> usb vector. Exact len avoids "host_connected".
+        if (str_len == 9 && off + 4 + 20 <= bytes &&
+            u[0]=='c' && u[1]=='o' && u[2]=='n' && u[3]=='n' &&
+            u[4]=='e' && u[5]=='c' && u[6]=='t' && u[7]=='e' && u[8]=='d') {
+            u[8] = 'x';
+            modified = true;
+        }
+        // "adb" (3 chars) -> usb_adb vector. Exact len avoids adb_enabled/adb_wifi.
+        else if (str_len == 3 && off + 4 + 8 <= bytes &&
+            u[0]=='a' && u[1]=='d' && u[2]=='b') {
+            u[2] = 'x';
+            modified = true;
+        }
+    }
+    return modified;
+}
+
 // Static buffer for location spoofing - will replace userspace pointer
 static char g_loc_spoof_buf[4096] __attribute__((aligned(4096))) __maybe_unused;
 static int g_loc_spoof_log = 0;
@@ -3111,6 +3165,15 @@ void lp_binder_copy_to_buffer_hook(struct binder_alloc *alloc,
 
     // Hide dev settings from non-system apps (request-side, corrupts setting name)
     if (bytes >= 100 && bytes <= 1500 && try_hide_dev_settings(buf, bytes)) {
+        lp_copy_to_user((void __user *)from, buf, bytes);
+        g_adb_hidden++;
+        return;
+    }
+
+    // USB_STATE sticky-broadcast cloak (ZCA adb plugin vectors #2 usb / #3 usb_adb).
+    // Reuses g_adb_hidden (whole-adb-surface counter). Window covers the USB_STATE
+    // intent+extras parcel (action literal 74B + ~10 bool extras ~= 200-800B).
+    if (bytes >= 60 && bytes <= 2000 && try_hide_usb_state(buf, bytes)) {
         lp_copy_to_user((void __user *)from, buf, bytes);
         g_adb_hidden++;
         return;
