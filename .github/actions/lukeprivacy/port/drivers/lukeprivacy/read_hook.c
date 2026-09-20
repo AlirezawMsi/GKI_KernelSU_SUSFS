@@ -76,19 +76,19 @@ enum fd_type {
 
 /* Fake content for /proc/version. SUSFS-style: drop "Wild" kernel suffix +
  * "build-user@build-host" + epoch-0 timestamp; emit stock-looking Pixel 6
- * kernel-builder@kbuild-pixel-6 with current susfs spoofed build date.
+ * build-user@build-host with current susfs spoofed build date.
  * Length kept ≤ realistic /proc/version output (~280 bytes); apps reading
  * with buffer ≥ FAKE_VERSION_LEN get exactly this, shorter readers truncate
  * cleanly (no "real bytes after our fake" leak because we always overwrite
  * up to ret bytes capped at FAKE_VERSION_LEN). */
 static const char FAKE_PROC_VERSION[] =
-    "Linux version 6.1.99-android14-11-gc8ed7156d "
-    "(kernel-builder@kbuild-pixel-6) "
+    "Linux version 6.1.145-android14-11-gc1de4747ac59-ab14219743 "
+    "(build-user@build-host) "
     "(Android (10087095, +pgo, +bolt, +lto, -mlgo, based on r487747c) "
     "clang version 17.0.2 "
     "(https://android.googlesource.com/toolchain/llvm-project "
     "d9f89f4d16663d5012e5c09495f3b30ece3d2362), LLD 17.0.2) "
-    "#1 SMP PREEMPT Wed Mar 26 22:57:12 UTC 2025\n";
+    "#1 SMP PREEMPT Mon Oct  6 16:50:48 UTC 2025\n";
 #define FAKE_PROC_VERSION_LEN (sizeof(FAKE_PROC_VERSION) - 1)
 
 /* Fake /proc/cpuinfo for Pixel 6 (Tensor G1: 4× Cortex-A55 + 2× Cortex-A76 +
