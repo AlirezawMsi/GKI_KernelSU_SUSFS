@@ -798,15 +798,13 @@ static int parse_profile_cmd(const char *args)
         if (*p == '-') { neg = true; p++; }
         while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); p++; }
         if (neg) v = -v;
-        /* EXPERIMENT (KPM3, 2026-07-20): ALL time hooks removed — the eventtime
-           MotionEvent offset AND the timens boot-clock offset (elapsedRealtime /
-           clock_gettime / starttime +X) are both gated on eventtime_offset_enabled,
-           so force it OFF here. Even if the companion requests an offset it stays
-           disabled → no time hook ever activates. */
-        (void)v;
-        g_profile.eventtime_offset_ns = 0;
-        g_profile.eventtime_offset_enabled = false;
-        pr_info("lukeprivacy: [KPM3] time hooks DISABLED (eventtime/timens off)\n");
+        /* RE-ENABLED 2026-09-20: offsets verified vs BTF; the kCFI panic in lp_prctl_hook
+           (indirect kallsyms calls) is fixed by marking that function __nocfi. Store + arm;
+           hooks stay inert until eventtime_target_uid is set (per account, not persisted). */
+        g_profile.eventtime_offset_ns = v;
+        g_profile.eventtime_offset_enabled = (v != 0);
+        pr_info("lukeprivacy: eventtime_offset=%lld ns enabled=%d\n",
+                (long long)v, g_profile.eventtime_offset_enabled);
         return 0;
     }
     if (!strncmp(args, "set_eventtime_target_uid:", 25)) {

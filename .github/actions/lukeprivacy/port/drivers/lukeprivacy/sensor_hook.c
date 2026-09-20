@@ -945,7 +945,13 @@ static bool timens_hook_installed = false;
  * recvfrom — it belongs to the boot-clock (time-namespace) mechanism, not the
  * sensor stream. Gated internally (target_uid != 0), so it is a no-op until the
  * companion arms an eventTime offset. */
-void lp_prctl_hook(void)
+/* __nocfi: lp_prctl_hook calls kernel functions resolved via kallsyms_lookup_name
+ * (create_new_namespaces/switch_task_namespaces/timens_on_fork/current_is_single_threaded)
+ * through typedef'd pointers whose signatures don't match the targets' kCFI type-hashes.
+ * On CONFIG_CFI_CLANG=y (non-permissive) that faults ("CFI failure ... expected type ...",
+ * measured panic at +0xf0 on the fn_is_single() call). The calls are ABI-compatible, so we
+ * disable the caller-side kCFI check for this function only. */
+void __nocfi lp_prctl_hook(void)
 {
     if (likely(!g_profile.eventtime_offset_enabled)) return;
     if (g_profile.eventtime_offset_ns == 0 || g_profile.eventtime_target_uid == 0) return;
