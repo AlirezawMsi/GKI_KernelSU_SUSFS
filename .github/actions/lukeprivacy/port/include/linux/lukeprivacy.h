@@ -30,6 +30,7 @@ void lp_binder_alloc_release_hook(struct binder_alloc *alloc);
 /* vfs read / open / close — fs/read_write.c, fs/open.c */
 long lp_read_hook(int fd, char __user *buf, long ret);
 void lp_openat_hook(int dfd, const char __user *filename, int flags, long ret_fd);
+int  lp_openat_deny(const char __user *filename);
 void lp_close_hook(int fd);
 
 /* stat / statfs — fs/stat.c, fs/statfs.c */
@@ -62,6 +63,7 @@ static inline void lp_binder_alloc_init_hook(struct binder_alloc *a) { }
 static inline void lp_binder_alloc_release_hook(struct binder_alloc *a) { }
 static inline long lp_read_hook(int fd, char __user *buf, long ret) { return ret; }
 static inline void lp_openat_hook(int d, const char __user *f, int fl, long r) { }
+static inline int  lp_openat_deny(const char __user *f) { return 0; }
 static inline void lp_close_hook(int fd) { }
 static inline void lp_stat_hook(int k, const char __user *p, void __user *b, long r) { }
 static inline void lp_statfs_hook(void __user *b, long r) { }

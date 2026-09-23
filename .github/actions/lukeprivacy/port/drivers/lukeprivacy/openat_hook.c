@@ -243,6 +243,45 @@ static bool starts_with_proc(const char *path)
            path[3] == 'o' && path[4] == 'c' && path[5] == '/';
 }
 
+/* Counter for /proc/config.gz denials (visible via dmesg on first hit). */
+unsigned int g_config_gz_denied = 0;
+
+/*
+ * lp_openat_deny — decide whether an open() must be failed with -ENOENT.
+ *
+ * Called from fs/open.c do_sys_openat2() right after the fd is assigned but
+ * before returning. Used to hide /proc/config.gz from ordinary app UIDs
+ * (>= 10000, incl. GMS/DroidGuard uid 10167) so they cannot read
+ * CONFIG_KSU / CONFIG_KSU_SUSFS / CONFIG_LUKEPRIVACY out of the kernel config
+ * — the last remaining root tell. System UIDs (< 10000: init, system_server,
+ * the VINTF kernel-config verifier at boot) are left untouched so
+ * /proc/config.gz stays readable for them and the device boots normally.
+ * Returns 1 to deny (caller closes the fd + returns -ENOENT), 0 otherwise.
+ */
+int lp_openat_deny(const char __user *filename)
+{
+    char path[MAX_PATH_LEN];
+    long len;
+    int uid;
+
+    if (!g_hooks_enabled) return 0;
+    if (!filename) return 0;
+    uid = lp_cur_uid();
+    if (uid < 10000) return 0;          /* system/VINTF/root read the real config.gz */
+
+    len = lp_copy_from_user(path, filename, sizeof(path) - 1);
+    if (len <= 0) return 0;
+    path[len] = '\0';
+
+    if (!strcmp(path, "/proc/config.gz")) {
+        if (!g_config_gz_denied)
+            pr_info("lukeprivacy: hiding /proc/config.gz from uid>=10000 (uid=%d)\n", uid);
+        g_config_gz_denied++;
+        return 1;
+    }
+    return 0;
+}
+
 /*
  * lp_openat_hook — openat() choke-point (POST).
  *
