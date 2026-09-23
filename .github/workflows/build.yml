@@ -150,6 +150,17 @@ jobs:
         echo "GIT_COMMITTER_DATE=${GIT_DATE}" >> $GITHUB_ENV
         echo "GIT_AUTHOR_DATE=${GIT_DATE}" >> $GITHUB_ENV
         echo "Build timestamp set to: $(date -u -d @${SOURCE_DATE_EPOCH} '+%Y-%m-%d %H:%M:%S UTC') (epoch: $SOURCE_DATE_EPOCH)"
+        # --- IG genuine-kernel: for the bluejay stock target (android14-6.1 @ SUBLEVEL 145),
+        # force /proc/version's date to the EXACT stock kernel build date so the real banner
+        # (what GMS/DroidGuard reads) matches the device byte-for-byte: vendor vermagic
+        # 6.1.145-android14-11-gc1de4747ac59-ab14219743, built Mon Oct  6 16:50:48 UTC 2025.
+        # GITHUB_ENV is last-write-wins, so this overrides the generic value above. ---
+        if [ "${{ inputs.version }}" = "android14-6.1" ] && [ "${{ inputs.sublevel }}" = "145" ]; then
+          IG_EPOCH=$(date -u -d "2025-10-06 16:50:48 UTC" +%s)
+          echo "SOURCE_DATE_EPOCH=${IG_EPOCH}" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_TIMESTAMP=Mon Oct  6 16:50:48 UTC 2025" >> $GITHUB_ENV
+          echo "IG genuine-kernel: forced KBUILD_BUILD_TIMESTAMP=Mon Oct  6 16:50:48 UTC 2025 (epoch ${IG_EPOCH})"
+        fi
 
     - name: Extract Sublevel and Set File Name
       id: extract

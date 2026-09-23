@@ -61,6 +61,15 @@ if [ -f "$DEF" ]; then
   if ! grep -q '^CONFIG_LUKEPRIVACY=y' "$DEF"; then
     echo 'CONFIG_LUKEPRIVACY=y' >> "$DEF"; echo "   [ok] CONFIG_LUKEPRIVACY=y -> arch/arm64/configs/gki_defconfig"
   else echo "   [skip] CONFIG_LUKEPRIVACY=y already in gki_defconfig"; fi
+  # 3a) IG genuine-kernel: drop /proc/config.gz so DroidGuard can't read CONFIG_KSU/SUSFS/LUKEPRIVACY.
+  # A clean-absent config.gz is a far weaker tell than one that literally contains CONFIG_KSU=y.
+  if grep -q '^CONFIG_IKCONFIG_PROC=' "$DEF"; then
+    sed -i 's/^CONFIG_IKCONFIG_PROC=.*/CONFIG_IKCONFIG_PROC=n/' "$DEF"
+    echo "   [ok] CONFIG_IKCONFIG_PROC=n -> gki_defconfig (config.gz removed)"
+  else
+    echo 'CONFIG_IKCONFIG_PROC=n' >> "$DEF"
+    echo "   [ok] CONFIG_IKCONFIG_PROC=n appended -> gki_defconfig (config.gz removed)"
+  fi
 else
   echo "   !! arch/arm64/configs/gki_defconfig not found — add CONFIG_LUKEPRIVACY=y manually"
 fi
