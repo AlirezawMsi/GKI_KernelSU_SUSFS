@@ -267,7 +267,10 @@ int lp_openat_deny(const char __user *filename)
     if (!g_hooks_enabled) return 0;
     if (!filename) return 0;
     uid = lp_cur_uid();
-    if (uid < 10000) return 0;          /* system/VINTF/root read the real config.gz */
+    /* ONLY the runtime-configured GMS/DroidGuard uid(s) get config.gz hidden.
+     * IG and every other app (and system/VINTF at boot) read the REAL config.gz
+     * untouched, so nothing but Play Integrity's own reader is ever affected. */
+    if (!lp_uid_hides_configgz(uid)) return 0;
 
     len = lp_copy_from_user(path, filename, sizeof(path) - 1);
     if (len <= 0) return 0;
@@ -275,7 +278,7 @@ int lp_openat_deny(const char __user *filename)
 
     if (!strcmp(path, "/proc/config.gz")) {
         if (!g_config_gz_denied)
-            pr_info("lukeprivacy: hiding /proc/config.gz from uid>=10000 (uid=%d)\n", uid);
+            pr_info("lukeprivacy: hiding /proc/config.gz from GMS/DroidGuard uid=%d\n", uid);
         g_config_gz_denied++;
         return 1;
     }

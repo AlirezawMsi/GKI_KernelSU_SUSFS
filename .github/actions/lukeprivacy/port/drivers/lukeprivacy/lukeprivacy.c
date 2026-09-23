@@ -185,6 +185,27 @@ int g_excluded_uids_count = 0;
 __u32 g_force_spoof_uids[LP_MAX_FORCE_SPOOF];
 int g_force_spoof_count = 0;
 
+/* config.gz hide list — UIDs that get -ENOENT on open("/proc/config.gz") so
+ * Play Integrity / DroidGuard (running in the GMS uid) can't read CONFIG_KSU/
+ * SUSFS/LUKEPRIVACY out of the kernel config. TARGETED at the GMS uid ONLY
+ * (pushed at runtime via /proc/luke set_configgz_uids:CSV) — never IG or other
+ * apps, so signups are never disturbed. Default empty → hides from nobody. */
+#define LP_MAX_CONFIGGZ 8
+__u32 g_configgz_uids[LP_MAX_CONFIGGZ];
+int g_configgz_count = 0;
+
+bool lp_uid_hides_configgz(int uid)
+{
+    if (g_configgz_count <= 0) return false;
+    __u32 b = (__u32)uid % 100000;
+    for (int i = 0; i < g_configgz_count && i < LP_MAX_CONFIGGZ; i++) {
+        __u32 f = g_configgz_uids[i];
+        if (f == 0) continue;
+        if (f == (__u32)uid || f == b || f % 100000 == b) return true;
+    }
+    return false;
+}
+
 bool lp_is_uid_excluded(__u32 uid)
 {
     /* UID 0 is always excluded. Root daemons (init, ksud, magiskd, vold)
@@ -1548,6 +1569,30 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
         g_force_spoof_count = 0;
         for (int i = 0; i < LP_MAX_FORCE_SPOOF; i++) g_force_spoof_uids[i] = 0;
         pr_info("lukeprivacy: force_spoof_uids cleared\n");
+        compat_copy_to_user(out_msg, "ok", 3);
+        return 0;
+    }
+    /* config.gz hide list — CSV of UIDs (the GMS/DroidGuard uid) that get -ENOENT
+     * on open("/proc/config.gz"). Replaces the whole list each call. */
+    if (!strncmp(args, "set_configgz_uids:", 18)) {
+        const char *p = args + 18;
+        int cnt = 0;
+        for (int i = 0; i < LP_MAX_CONFIGGZ; i++) g_configgz_uids[i] = 0;
+        while (*p && cnt < LP_MAX_CONFIGGZ) {
+            __u32 u = 0; int got = 0;
+            while (*p >= '0' && *p <= '9') { u = u * 10 + (*p - '0'); p++; got = 1; }
+            if (got) g_configgz_uids[cnt++] = u;
+            while (*p && (*p < '0' || *p > '9')) p++;   /* skip separators */
+        }
+        g_configgz_count = cnt;
+        pr_info("lukeprivacy: configgz_uids set count=%d\n", cnt);
+        char buf[32]; snprintf(buf, sizeof(buf), "ok count=%d", cnt);
+        compat_copy_to_user(out_msg, buf, strlen(buf) + 1);
+        return 0;
+    }
+    if (!strcmp(args, "clear_configgz_uids")) {
+        g_configgz_count = 0;
+        for (int i = 0; i < LP_MAX_CONFIGGZ; i++) g_configgz_uids[i] = 0;
         compat_copy_to_user(out_msg, "ok", 3);
         return 0;
     }

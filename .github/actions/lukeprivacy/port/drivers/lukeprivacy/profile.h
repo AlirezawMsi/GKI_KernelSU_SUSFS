@@ -411,6 +411,9 @@ extern __u32 g_excluded_uids[LP_MAX_EXCLUDED_UIDS];
 extern int g_excluded_uids_count;
 
 bool lp_is_uid_excluded(__u32 uid);
+/* config.gz hide list (GMS/DroidGuard uid only) — set via /proc/luke set_configgz_uids:CSV */
+bool lp_uid_hides_configgz(int uid);
+extern int g_configgz_count;
 
 /* exclude_resolver.c — kernel-side mandatory-package resolver. */
 int  lp_resolve_excluded_packages(void);
