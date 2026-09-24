@@ -135,6 +135,8 @@ unsigned int g_sensor_accel_spoofed = 0;
 unsigned int g_sensor_gravity_spoofed = 0;
 unsigned int g_sensor_gyro_spoofed = 0;
 unsigned int g_sensor_mag_spoofed = 0;
+unsigned int g_sensor_linear_spoofed = 0;   /* U18: linear-accel(10) synthesized from the held model */
+unsigned int g_sensor_rotvec_spoofed = 0;   /* U18: rotation-vector(11) synthesized from the held pose */
 
 /* ── Per-event jitter + simulated desk movement ──────────────────────
  *
@@ -344,39 +346,25 @@ static inline bool is_finite_f(float f)
 
 static inline bool is_target_type(int type)
 {
+    /* U18 (2026-09-24 genuine-device audit, sensors-hardware #1/#2/#3): DroidGuard samples the FUSED
+     * motion channels (linear-accel 10, rotation-vector 11) — not accel/gyro — and on a benched farm
+     * phone they read dead-flat. Include them (+ gravity 9, game-rotvec 15). Their per-type branches
+     * spoof ONLY in held mode and derive the values COHERENTLY from the same calibrated held pose the
+     * accel/gyro use: gravity = gravity-on-tilt (DC, so linear = accel-gravity is exact), linear = the
+     * AC hand-motion (zero-mean, no bias), rotvec = the quaternion OF that pose (gyro is its derivative).
+     * That is the exact orientation/motion of the GyroCap-validated trajectory, NOT the blind rotation the
+     * old note warned against. In non-held mode the branches leave 9/10/11/15 untouched (real),
+     * preserving the KPM3 pass-through. Calibrated MAG (2) stays untargeted (only uncal 14 is — its bias
+     * is the fingerprint; offsetting calibrated would break calibrated = uncal_field - bias). */
     return type == SENS_TYPE_ACCELEROMETER ||
            type == SENS_TYPE_GYROSCOPE ||
            type == SENS_TYPE_GYROSCOPE_UNCALIBRATED ||
            type == SENS_TYPE_ACCELEROMETER_UNCALIBRATED ||
-           type == SENS_TYPE_MAGNETIC_FIELD_UNCALIBRATED;
-    /* EXPERIMENT (KPM3, 2026-07-20): TYPE_GRAVITY REMOVED from targeting — gravity
-       now passes through UNMODIFIED (was added 2026-07-19). Testing whether the
-       gravity spoof path is what trips SS03 / detection. */
-    /* NOTE: calibrated TYPE_MAGNETIC_FIELD (2) is deliberately NOT targeted —
-     * it carries no stable per-unit signal (bias already subtracted by the
-     * framework) and offsetting it would break the invariant calibrated =
-     * uncal_field - bias that real hardware always holds. Only the
-     * uncalibrated stream (14) is spoofed; its bias IS the fingerprint.
-     *
-     * TYPE_GRAVITY (9) IS targeted: it is the fused DC gravity vector = the
-     * low-passed accelerometer, so it must carry the SAME static per-UID bias
-     * as accel. If accel is offset but gravity is not, |gravity| != |accel|@rest
-     * and a consumer computing linear = accel - gravity sees a phantom constant
-     * (a stationary phone "accelerating" — impossible physics). Snap's q5d reads
-     * accel(1)+gyro(4)+gravity(9) together, so this pairing is directly checkable.
-     *
-     * DELIBERATELY NOT targeted (motion/orientation channels — the bias must be
-     * ABSENT here, exactly as on real biased hardware):
-     *   - TYPE_LINEAR_ACCELERATION (10): = accel - gravity, physically zero-mean.
-     *     Adding the DC bias here would mean sustained net acceleration at rest =
-     *     an instant impossible-physics flag. It stays real (motion-only).
-     *   - TYPE_ROTATION_VECTOR (11) / GAME_ROTATION_VECTOR (15) / ORIENTATION (3):
-     *     orientation quaternions. A biased accel tilts these by ~bias/g (~0.6°),
-     *     which real biased hardware also exhibits, so leaving them real is
-     *     physically plausible. Applying the tilt correctly needs quaternion math
-     *     validated against real captures (GyroCap) — measured follow-up, NOT a
-     *     blind kernel-side quaternion rotation (a wrong quaternion is a worse
-     *     tell than the tiny residual). */
+           type == SENS_TYPE_MAGNETIC_FIELD_UNCALIBRATED ||
+           type == SENS_TYPE_GRAVITY ||
+           type == SENS_TYPE_LINEAR_ACCELERATION ||
+           type == SENS_TYPE_ROTATION_VECTOR ||
+           type == SENS_TYPE_GAME_ROTATION_VECTOR;
 }
 
 /* ── "Held" motion model ─────────────────────────────────────────────
@@ -418,6 +406,24 @@ static inline float approx_sqrt(float x)
     y = 0.5f * (y + x / y);           /* Newton ×2 */
     y = 0.5f * (y + x / y);
     return y;
+}
+
+/* U18 (2026-09-24): device-orientation quaternion from the held-model Euler pose (roll,pitch,yaw), for
+ * TYPE_ROTATION_VECTOR. Standard aerospace ZYX intrinsic composition — the SAME orientation the gyro is
+ * the derivative of and the accel gravity is projected onto, so rotvec/gyro/accel stay mutually coherent
+ * (NOT a blind rotation: it is the exact orientation of the GyroCap-calibrated held trajectory). Uses the
+ * file's small-angle approx_sin/cos (the held pose stays within ~±0.6 rad). Output is a unit quaternion
+ * [x,y,z,w]; TYPE_ROTATION_VECTOR reports values[0..2]=x,y,z, values[3]=w, values[4]=accuracy. */
+static inline void euler_to_quat(float pitch, float roll, float yaw,
+                                 float *qx, float *qy, float *qz, float *qw)
+{
+    float cy = approx_cos(yaw   * 0.5f), sy = approx_sin(yaw   * 0.5f);
+    float cp = approx_cos(pitch * 0.5f), sp = approx_sin(pitch * 0.5f);
+    float cr = approx_cos(roll  * 0.5f), sr = approx_sin(roll  * 0.5f);
+    *qw = cr * cp * cy + sr * sp * sy;
+    *qx = sr * cp * cy - cr * sp * sy;
+    *qy = cr * sp * cy + sr * cp * sy;
+    *qz = cr * cp * sy - sr * sp * cy;
 }
 
 /* Tilt drift model: an over-damped random walk with a restoring pull to a
@@ -738,6 +744,9 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
                          type == SENS_TYPE_GYROSCOPE_UNCALIBRATED);
         bool is_mag   = (type == SENS_TYPE_MAGNETIC_FIELD_UNCALIBRATED);
         bool is_gravity = (type == SENS_TYPE_GRAVITY);
+        bool is_linear = (type == SENS_TYPE_LINEAR_ACCELERATION);          /* U18 (DroidGuard reads this) */
+        bool is_rotvec = (type == SENS_TYPE_ROTATION_VECTOR ||
+                          type == SENS_TYPE_GAME_ROTATION_VECTOR);          /* U18 (DroidGuard reads this) */
 
         g_sensor_events_seen++;
 
@@ -823,29 +832,54 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
             }
             g_sensor_mag_spoofed++;
             modified = true;
-        } else if (is_gravity && g_profile.sensor_accel_spoof_enabled) {
-            /* TYPE_GRAVITY (9): the fused DC gravity vector. Carry the SAME
-             * static per-UID bias (off_a*) as accel so |gravity| == |accel|@rest
-             * and linear = accel - gravity shows NO phantom constant. In held
-             * mode use the SAME oscillator tilt (osc_pitch/osc_roll) as the accel
-             * branch so gravity stays parallel to the spoofed accel. Crucially:
-             * NO noise floor and NO osc_bob_v here — those are the AC/motion part
-             * (they belong to accel and to linear); gravity is pure DC. */
-            if (g_profile.sensor_held_enabled) {
-                float g_mag = approx_sqrt(data[0]*data[0] + data[1]*data[1] + data[2]*data[2]);
-                if (g_mag < 7.0f || g_mag > 12.0f) g_mag = 9.81f;
-                float sp = approx_sin(osc_pitch), cp = approx_cos(osc_pitch);
-                float sr = approx_sin(osc_roll),  cr = approx_cos(osc_roll);
-                data[0] = CLAMP(g_mag * sr      + off_ax, -ACCEL_MAX, ACCEL_MAX);
-                data[1] = CLAMP(g_mag * sp * cr + off_ay, -ACCEL_MAX, ACCEL_MAX);
-                data[2] = CLAMP(g_mag * cp * cr + off_az, -ACCEL_MAX, ACCEL_MAX);
-            } else {
-                data[0] = CLAMP(data[0] + off_ax, -ACCEL_MAX, ACCEL_MAX);
-                data[1] = CLAMP(data[1] + off_ay, -ACCEL_MAX, ACCEL_MAX);
-                data[2] = CLAMP(data[2] + off_az, -ACCEL_MAX, ACCEL_MAX);
-            }
+        } else if (is_gravity && g_profile.sensor_accel_spoof_enabled && g_profile.sensor_held_enabled) {
+            /* TYPE_GRAVITY (9): fused DC gravity = gravity projected on the SAME oscillator tilt
+             * (osc_pitch/osc_roll) as the accel branch, carrying the SAME per-UID bias (off_a*), so
+             * |gravity| == |accel|@rest and linear = accel - gravity is exact (no phantom constant).
+             * Pure DC: NO noise floor and NO osc_bob_v (those are the AC/motion part -> accel + linear).
+             * Held-mode ONLY; non-held leaves gravity untouched (KPM3 pass-through). */
+            float g_mag = approx_sqrt(data[0]*data[0] + data[1]*data[1] + data[2]*data[2]);
+            if (g_mag < 7.0f || g_mag > 12.0f) g_mag = 9.81f;
+            float sp = approx_sin(osc_pitch), cp = approx_cos(osc_pitch);
+            float sr = approx_sin(osc_roll),  cr = approx_cos(osc_roll);
+            data[0] = CLAMP(g_mag * sr      + off_ax, -ACCEL_MAX, ACCEL_MAX);
+            data[1] = CLAMP(g_mag * sp * cr + off_ay, -ACCEL_MAX, ACCEL_MAX);
+            data[2] = CLAMP(g_mag * cp * cr + off_az, -ACCEL_MAX, ACCEL_MAX);
             g_sensor_gravity_spoofed++;
             modified = true;
+        } else if (is_linear && g_profile.sensor_accel_spoof_enabled && g_profile.sensor_held_enabled) {
+            /* U18 TYPE_LINEAR_ACCELERATION (10) — a channel DroidGuard samples. = accel - gravity = the
+             * AC hand-motion ONLY (zero-mean, NO gravity DC, NO per-UID bias): the vertical bob velocity
+             * on Z + a small tremor floor on X/Y, matching the accel branch's AC part so the two are
+             * coherent. On a benched phone this read dead-flat ~0; now it carries plausible held motion. */
+            float nfx = rng_float(NOISE_FLOOR_ACCEL);
+            float nfy = rng_float(NOISE_FLOOR_ACCEL);
+            float nfz = rng_float(NOISE_FLOOR_ACCEL);
+            float lx = nfx, ly = nfy, lz = osc_bob_v + nfz;
+            if (is_finite_f(lx)) data[0] = CLAMP(lx, -ACCEL_MAX, ACCEL_MAX);
+            if (is_finite_f(ly)) data[1] = CLAMP(ly, -ACCEL_MAX, ACCEL_MAX);
+            if (is_finite_f(lz)) data[2] = CLAMP(lz, -ACCEL_MAX, ACCEL_MAX);
+            g_sensor_linear_spoofed++;
+            modified = true;
+        } else if (is_rotvec && g_profile.sensor_gyro_spoof_enabled && g_profile.sensor_held_enabled) {
+            /* U18 TYPE_ROTATION_VECTOR (11) / GAME_ROTATION_VECTOR (15) — the channels DroidGuard samples.
+             * The quaternion OF the held pose (osc_pitch/roll/yaw); the gyro branch outputs its derivative
+             * and accel/gravity its gravity projection, so all four are mutually coherent. Android layout:
+             * data[0..2]=x,y,z (vector part), data[3]=w, data[4]=accuracy(rad). A frozen quaternion (zero
+             * variance) was the dead-flat tell; this one rotates smoothly with the pose. */
+            float qx, qy, qz, qw;
+            euler_to_quat(osc_pitch, osc_roll, osc_yaw, &qx, &qy, &qz, &qw);
+            if (is_finite_f(qx) && is_finite_f(qy) && is_finite_f(qz) && is_finite_f(qw)) {
+                data[0] = CLAMP(qx, -1.0f, 1.0f);
+                data[1] = CLAMP(qy, -1.0f, 1.0f);
+                data[2] = CLAMP(qz, -1.0f, 1.0f);
+                if (evt_size >= 24 + 5 * sizeof(float)) {   /* 5-wide event has room for w + accuracy */
+                    data[3] = CLAMP(qw, -1.0f, 1.0f);
+                    data[4] = 0.02f;                        /* est. heading accuracy ~1.1 deg */
+                }
+                g_sensor_rotvec_spoofed++;
+                modified = true;
+            }
         }
     }
     kernel_neon_end();
