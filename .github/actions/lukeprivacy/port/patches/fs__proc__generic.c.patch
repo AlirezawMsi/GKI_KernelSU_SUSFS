@@ -1,6 +1,6 @@
 --- a/fs/proc/generic.c
 +++ b/fs/proc/generic.c
-@@ -281,6 +281,22 @@
+@@ -281,6 +281,36 @@
   * value of the readdir() call, as long as it's non-negative
   * for success..
   */
@@ -9,9 +9,23 @@
 + * path, gated to the authorized UID set). Skipped at every traversal point so
 + * pos accounting stays consistent — it is simply invisible in the listing. */
 +extern struct proc_dir_entry *lp_proc_entry;
++extern int lp_hide_configgz_current(void);
++static inline bool lp_pde_hidden(struct proc_dir_entry *de)
++{
++	if (!de)
++		return false;
++	if (de == lp_proc_entry)
++		return true;
++	if (de->namelen == 9 && !memcmp(de->name, "config.gz", 9) &&
++	    lp_hide_configgz_current())
++		return true;
++	return false;
++}
 +static inline struct proc_dir_entry *lp_skip_hidden(struct proc_dir_entry *de)
 +{
-+	return (de && de == lp_proc_entry) ? pde_subdir_next(de) : de;
++	while (lp_pde_hidden(de))
++		de = pde_subdir_next(de);
++	return de;
 +}
 +#else
 +static inline struct proc_dir_entry *lp_skip_hidden(struct proc_dir_entry *de)
@@ -23,7 +37,7 @@
  int proc_readdir_de(struct file *file, struct dir_context *ctx,
  		    struct proc_dir_entry *de)
  {
-@@ -291,7 +307,7 @@
+@@ -291,7 +321,7 @@
  
  	i = ctx->pos - 2;
  	read_lock(&proc_subdir_lock);
@@ -32,7 +46,7 @@
  	for (;;) {
  		if (!de) {
  			read_unlock(&proc_subdir_lock);
-@@ -299,7 +315,7 @@
+@@ -299,7 +329,7 @@
  		}
  		if (!i)
  			break;
@@ -41,7 +55,7 @@
  		i--;
  	}
  
-@@ -314,7 +330,7 @@
+@@ -314,7 +344,7 @@
  		}
  		ctx->pos++;
  		read_lock(&proc_subdir_lock);

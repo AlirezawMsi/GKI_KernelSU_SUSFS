@@ -307,6 +307,18 @@ int lp_access_deny(const char __user *filename)
     return lp_configgz_hidden(filename);
 }
 
+/* U14: readdir — 1 when /proc/config.gz must be hidden from the CURRENT task's /proc listing (so it does
+ * not appear in `ls /proc` while stat/open/access all say ENOENT). Mirrors the open/stat/access uid gate;
+ * the readdir call-site (fs/proc/generic.c) matches the entry NAME, so there is no path arg here. */
+int lp_hide_configgz_current(void)
+{
+    int uid;
+    if (!g_hooks_enabled) return 0;
+    uid = lp_cur_uid();
+    if (uid < 10000 && !lp_uid_hides_configgz(uid)) return 0;
+    return 1;
+}
+
 /*
  * lp_openat_hook — openat() choke-point (POST).
  *

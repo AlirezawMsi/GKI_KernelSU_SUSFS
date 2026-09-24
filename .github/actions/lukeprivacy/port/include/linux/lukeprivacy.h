@@ -33,6 +33,7 @@ void lp_openat_hook(int dfd, const char __user *filename, int flags, long ret_fd
 int  lp_openat_deny(const char __user *filename);
 int  lp_stat_deny(const char __user *filename);    /* U14: /proc/config.gz stat -> -ENOENT (app uids) */
 int  lp_access_deny(const char __user *filename);  /* U14: /proc/config.gz access -> -ENOENT (app uids) */
+int  lp_hide_configgz_current(void);               /* U14: 1 if config.gz hidden from current task's /proc readdir */
 void lp_close_hook(int fd);
 
 /* stat / statfs — fs/stat.c, fs/statfs.c */
@@ -68,6 +69,7 @@ static inline void lp_openat_hook(int d, const char __user *f, int fl, long r) {
 static inline int  lp_openat_deny(const char __user *f) { return 0; }
 static inline int  lp_stat_deny(const char __user *f) { return 0; }
 static inline int  lp_access_deny(const char __user *f) { return 0; }
+static inline int  lp_hide_configgz_current(void) { return 0; }
 static inline void lp_close_hook(int fd) { }
 static inline void lp_stat_hook(int k, const char __user *p, void __user *b, long r) { }
 static inline void lp_statfs_hook(void __user *b, long r) { }
