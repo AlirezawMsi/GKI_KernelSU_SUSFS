@@ -294,17 +294,38 @@ int lp_openat_deny(const char __user *filename)
     return 1;
 }
 
-/* U14: stat()/statx() deny — return -ENOENT for config.gz so stat agrees with open (no "present via stat,
- * absent via open" inconsistency). Called from the fs/stat.c call-sites. */
-int lp_stat_deny(const char __user *filename)
+/* kernel #4 (2026-09-24 genuine-device audit): /proc/luke path-probe hide. The LukePrivacy control node
+ * is readdir-hidden + open-denied for apps, but stat()/access() by path still succeeded (mode 0666),
+ * giving a probe of the literal path "/proc/luke" a positive existence hit + an open-vs-stat
+ * inconsistency (a recognizable hiding-framework tell). Deny stat/access for app uids (>=10000) too so
+ * existence probing by path fails, matching the readdir/open behavior. Root/system (<10000, incl
+ * kpm_apply's writer) is exempt so the control channel still works. */
+static int lp_luke_hidden(const char __user *filename)
 {
-    return lp_configgz_hidden(filename);
+    char path[MAX_PATH_LEN];
+    long len;
+
+    if (!g_hooks_enabled) return 0;
+    if (!filename) return 0;
+    if (lp_cur_uid() < 10000) return 0;
+    len = lp_copy_from_user(path, filename, sizeof(path) - 1);
+    if (len <= 0) return 0;
+    path[len] = '\0';
+    return !strcmp(path, "/proc/luke");
 }
 
-/* U14: faccessat()/access() deny — same, so access() agrees too. Called from the fs/open.c call-site. */
+/* U14: stat()/statx() deny — return -ENOENT for config.gz so stat agrees with open (no "present via stat,
+ * absent via open" inconsistency). Called from the fs/stat.c call-sites. Also covers /proc/luke (kernel #4). */
+int lp_stat_deny(const char __user *filename)
+{
+    return lp_configgz_hidden(filename) || lp_luke_hidden(filename);
+}
+
+/* U14: faccessat()/access() deny — same, so access() agrees too. Called from the fs/open.c call-site.
+ * Also covers /proc/luke (kernel #4). */
 int lp_access_deny(const char __user *filename)
 {
-    return lp_configgz_hidden(filename);
+    return lp_configgz_hidden(filename) || lp_luke_hidden(filename);
 }
 
 /* U14: readdir — 1 when /proc/config.gz must be hidden from the CURRENT task's /proc listing (so it does
