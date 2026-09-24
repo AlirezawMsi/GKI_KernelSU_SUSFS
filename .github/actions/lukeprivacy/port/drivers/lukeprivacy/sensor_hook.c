@@ -645,7 +645,13 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
      * Google/system pkgs. */
     __u32 uid = lp_current_uid();
     if (uid < 10000) return;
-    if (lp_is_uid_excluded(uid)) return;
+    /* U18 (2026-09-24 genuine-device audit S1): identity-excluded uids
+     * (GMS/DroidGuard) normally bypass ALL spoofing — correct for identity, but a
+     * real phone's GMS reads the SAME handheld motion every other process sees.
+     * Excluding it here is exactly why DroidGuard sampled a dead-flat/frozen device.
+     * Let sensor-INCLUDED uids (the GMS uid, pushed via set_sensor_include) through
+     * for MOTION ONLY; binder_hook/ioctl_hook identity spoofing keeps excluding them. */
+    if (lp_is_uid_excluded(uid) && !lp_uid_sensor_included(uid)) return;
 
     /* Try the most common size first to short-circuit on the typical case. */
     size_t evt_size = SENS_EVT_TYPICAL;
@@ -684,9 +690,21 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
     bool modified = false;
 
     kernel_neon_begin();
-    derive_offsets(uid, &off_ax, &off_ay, &off_az,
-                   &off_gx, &off_gy, &off_gz,
-                   &off_mx, &off_my, &off_mz);
+    if (lp_is_uid_excluded(uid)) {
+        /* U18: sensor-included-but-identity-excluded (GMS/DroidGuard) — MOTION
+         * ONLY, zero static bias. derive_offsets seeds from the per-CONTAINER
+         * android_id, so a per-uid bias here would make GMS's chip bias change per
+         * IG account — but a real IMU's bias is device-stable. Zero bias → clean
+         * gravity magnitude + the global time-based held motion + noise floor:
+         * coherent with IG's pose and stable across containers. */
+        off_ax = off_ay = off_az = 0.0f;
+        off_gx = off_gy = off_gz = 0.0f;
+        off_mx = off_my = off_mz = 0.0f;
+    } else {
+        derive_offsets(uid, &off_ax, &off_ay, &off_az,
+                       &off_gx, &off_gy, &off_gz,
+                       &off_mx, &off_my, &off_mz);
+    }
 
     for (size_t i = 0; i < count; i++) {
         char *e = scratch + i * evt_size;

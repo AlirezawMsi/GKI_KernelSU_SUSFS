@@ -414,6 +414,9 @@ bool lp_is_uid_excluded(__u32 uid);
 /* config.gz hide list (GMS/DroidGuard uid only) — set via /proc/luke set_configgz_uids:CSV */
 bool lp_uid_hides_configgz(int uid);
 extern int g_configgz_count;
+/* U18 sensor-motion include list (GMS/DroidGuard uid) — set via /proc/luke set_sensor_include:CSV */
+bool lp_uid_sensor_included(__u32 uid);
+extern int g_sensor_incl_count;
 
 /* exclude_resolver.c — kernel-side mandatory-package resolver. */
 int  lp_resolve_excluded_packages(void);

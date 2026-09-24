@@ -206,6 +206,26 @@ bool lp_uid_hides_configgz(int uid)
     return false;
 }
 
+/* U18 sensor-motion include list — identity-EXCLUDED uids (the GMS/DroidGuard uid)
+ * that STILL receive the handheld sensor motion, so DroidGuard does not sample a
+ * dead-flat device (audit S1). Motion only, zero static bias (see sensor_hook.c).
+ * Pushed at runtime via /proc/luke set_sensor_include:CSV. Default empty. */
+#define LP_MAX_SENSOR_INCL 8
+__u32 g_sensor_incl_uids[LP_MAX_SENSOR_INCL];
+int g_sensor_incl_count = 0;
+
+bool lp_uid_sensor_included(__u32 uid)
+{
+    if (g_sensor_incl_count <= 0) return false;
+    __u32 b = uid % 100000;
+    for (int i = 0; i < g_sensor_incl_count && i < LP_MAX_SENSOR_INCL; i++) {
+        __u32 f = g_sensor_incl_uids[i];
+        if (f == 0) continue;
+        if (f == uid || f == b || f % 100000 == b) return true;
+    }
+    return false;
+}
+
 bool lp_is_uid_excluded(__u32 uid)
 {
     /* UID 0 is always excluded. Root daemons (init, ksud, magiskd, vold)
@@ -1593,6 +1613,31 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
     if (!strcmp(args, "clear_configgz_uids")) {
         g_configgz_count = 0;
         for (int i = 0; i < LP_MAX_CONFIGGZ; i++) g_configgz_uids[i] = 0;
+        compat_copy_to_user(out_msg, "ok", 3);
+        return 0;
+    }
+
+    /* U18 sensor-motion include list — CSV of uids (the GMS/DroidGuard uid) that
+     * get the handheld motion despite being identity-excluded. Replaces the list. */
+    if (!strncmp(args, "set_sensor_include:", 19)) {
+        const char *p = args + 19;
+        int cnt = 0;
+        for (int i = 0; i < LP_MAX_SENSOR_INCL; i++) g_sensor_incl_uids[i] = 0;
+        while (*p && cnt < LP_MAX_SENSOR_INCL) {
+            __u32 u = 0; int got = 0;
+            while (*p >= '0' && *p <= '9') { u = u * 10 + (*p - '0'); p++; got = 1; }
+            if (got) g_sensor_incl_uids[cnt++] = u;
+            while (*p && (*p < '0' || *p > '9')) p++;   /* skip separators */
+        }
+        g_sensor_incl_count = cnt;
+        pr_info("lukeprivacy: sensor_include set count=%d\n", cnt);
+        char buf[32]; snprintf(buf, sizeof(buf), "ok count=%d", cnt);
+        compat_copy_to_user(out_msg, buf, strlen(buf) + 1);
+        return 0;
+    }
+    if (!strcmp(args, "clear_sensor_include")) {
+        g_sensor_incl_count = 0;
+        for (int i = 0; i < LP_MAX_SENSOR_INCL; i++) g_sensor_incl_uids[i] = 0;
         compat_copy_to_user(out_msg, "ok", 3);
         return 0;
     }
