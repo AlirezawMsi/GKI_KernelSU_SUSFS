@@ -267,10 +267,14 @@ int lp_openat_deny(const char __user *filename)
     if (!g_hooks_enabled) return 0;
     if (!filename) return 0;
     uid = lp_cur_uid();
-    /* ONLY the runtime-configured GMS/DroidGuard uid(s) get config.gz hidden.
-     * IG and every other app (and system/VINTF at boot) read the REAL config.gz
-     * untouched, so nothing but Play Integrity's own reader is ever affected. */
-    if (!lp_uid_hides_configgz(uid)) return 0;
+    /* U14 (2026-09-24 genuine-device audit): hide /proc/config.gz from ALL app uids (>= 10000), not just
+     * the runtime-configured GMS/DroidGuard uid. A genuine Pixel exposes no app-readable kernel config
+     * carrying CONFIG_KSU / CONFIG_KSU_SUSFS / CONFIG_LUKEPRIVACY markers, so any app that greps config.gz
+     * for root (IG does) must see it absent — this matches a stock IKCONFIG_PROC=n device from an app's
+     * view. System uids (< 10000: init, system_server, the VINTF kernel-config verifier at boot) still
+     * read the REAL config.gz, so the device boots normally. The explicit set_configgz_uids list is still
+     * honored (harmless superset for any < 10000 entry). */
+    if (uid < 10000 && !lp_uid_hides_configgz(uid)) return 0;
 
     len = lp_copy_from_user(path, filename, sizeof(path) - 1);
     if (len <= 0) return 0;
