@@ -258,7 +258,17 @@ unsigned int g_config_gz_denied = 0;
  * /proc/config.gz stays readable for them and the device boots normally.
  * Returns 1 to deny (caller closes the fd + returns -ENOENT), 0 otherwise.
  */
-int lp_openat_deny(const char __user *filename)
+/*
+ * U14 (2026-09-24 genuine-device audit): true when the CURRENT caller must see /proc/config.gz as ABSENT.
+ * Applies to ALL app uids (>= 10000), not just the runtime-configured GMS/DroidGuard uid: a genuine Pixel
+ * exposes no app-readable kernel config carrying CONFIG_KSU / CONFIG_KSU_SUSFS / CONFIG_LUKEPRIVACY markers,
+ * so any app that greps config.gz for root (IG does) must see it gone. System uids (< 10000: init,
+ * system_server, the VINTF kernel-config verifier at boot) still read the REAL config.gz so the device
+ * boots normally. The explicit set_configgz_uids list is still honored (harmless superset for any < 10000
+ * entry). Shared by the open/stat/access denies so an app's view is CONSISTENT (open + stat + access all
+ * return -ENOENT), exactly matching a stock IKCONFIG_PROC=n device — no open/stat inconsistency to detect.
+ */
+static int lp_configgz_hidden(const char __user *filename)
 {
     char path[MAX_PATH_LEN];
     long len;
@@ -267,26 +277,34 @@ int lp_openat_deny(const char __user *filename)
     if (!g_hooks_enabled) return 0;
     if (!filename) return 0;
     uid = lp_cur_uid();
-    /* U14 (2026-09-24 genuine-device audit): hide /proc/config.gz from ALL app uids (>= 10000), not just
-     * the runtime-configured GMS/DroidGuard uid. A genuine Pixel exposes no app-readable kernel config
-     * carrying CONFIG_KSU / CONFIG_KSU_SUSFS / CONFIG_LUKEPRIVACY markers, so any app that greps config.gz
-     * for root (IG does) must see it absent — this matches a stock IKCONFIG_PROC=n device from an app's
-     * view. System uids (< 10000: init, system_server, the VINTF kernel-config verifier at boot) still
-     * read the REAL config.gz, so the device boots normally. The explicit set_configgz_uids list is still
-     * honored (harmless superset for any < 10000 entry). */
     if (uid < 10000 && !lp_uid_hides_configgz(uid)) return 0;
 
     len = lp_copy_from_user(path, filename, sizeof(path) - 1);
     if (len <= 0) return 0;
     path[len] = '\0';
+    return !strcmp(path, "/proc/config.gz");
+}
 
-    if (!strcmp(path, "/proc/config.gz")) {
-        if (!g_config_gz_denied)
-            pr_info("lukeprivacy: hiding /proc/config.gz from GMS/DroidGuard uid=%d\n", uid);
-        g_config_gz_denied++;
-        return 1;
-    }
-    return 0;
+int lp_openat_deny(const char __user *filename)
+{
+    if (!lp_configgz_hidden(filename)) return 0;
+    if (!g_config_gz_denied)
+        pr_info("lukeprivacy: hiding /proc/config.gz from app uid=%d (open)\n", lp_cur_uid());
+    g_config_gz_denied++;
+    return 1;
+}
+
+/* U14: stat()/statx() deny — return -ENOENT for config.gz so stat agrees with open (no "present via stat,
+ * absent via open" inconsistency). Called from the fs/stat.c call-sites. */
+int lp_stat_deny(const char __user *filename)
+{
+    return lp_configgz_hidden(filename);
+}
+
+/* U14: faccessat()/access() deny — same, so access() agrees too. Called from the fs/open.c call-site. */
+int lp_access_deny(const char __user *filename)
+{
+    return lp_configgz_hidden(filename);
 }
 
 /*

@@ -1,17 +1,19 @@
 --- a/fs/stat.c
 +++ b/fs/stat.c
-@@ -437,7 +437,9 @@
+@@ -437,7 +437,11 @@
  	error = vfs_fstatat(dfd, filename, &stat, flag);
  	if (error)
  		return error;
 -	return cp_new_stat(&stat, statbuf);
++	if (lp_stat_deny(filename))
++		return -ENOENT;
 +	error = cp_new_stat(&stat, statbuf);
 +	lp_stat_hook(LP_STAT_NEWFSTATAT, filename, statbuf, error);
 +	return error;
  }
  #endif
  
-@@ -449,6 +451,7 @@
+@@ -449,6 +453,7 @@
  	if (!error)
  		error = cp_new_stat(&stat, statbuf);
  
@@ -19,10 +21,12 @@
  	return error;
  }
  #endif
-@@ -670,6 +673,7 @@
+@@ -670,6 +675,9 @@
  	ret = do_statx(dfd, name, flags, mask, buffer);
  	putname(name);
  
++	if (lp_stat_deny(filename))
++		ret = -ENOENT;
 +	lp_stat_hook(LP_STAT_STATX, filename, buffer, ret);
  	return ret;
  }
