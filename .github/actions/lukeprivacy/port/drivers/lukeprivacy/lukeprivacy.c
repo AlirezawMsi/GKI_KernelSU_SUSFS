@@ -829,9 +829,19 @@ static int parse_profile_cmd(const char *args)
         pr_info("lukeprivacy: adb_hide=%d\n", g_profile.adb_hide_enabled);
         return 0;
     }
-    /* set_boot_id ctl0 removed 2026-07-24 — boot_id spoof retired (workflow
-     * reboots between accounts → real boot_id rotates naturally). Enable path
-     * gone; g_profile.boot_id_spoof_enabled stays false. */
+    /* set_boot_id_spoof ctl0 -- RE-ENABLED 2026-09-25. Retired 2026-07-24 on the
+     * assumption the workflow reboots between accounts (real boot_id rotates
+     * naturally); the current no-reboot workflow leaves the real boot_id shared
+     * across same-boot accounts, re-linking containers that otherwise look like
+     * distinct devices to DroidGuard (boot_id is the one device-level signal not
+     * rotated into the GMS uid). The fake boot_id derives from android_id_seed
+     * (read_hook.c, "BOOTID00" salt) so it rotates per-container with the seed and
+     * reaches the GMS/GSF uid via set_force_spoof_uids -- enable gate only. */
+    if (!strncmp(args, "set_boot_id_spoof:", 18)) {
+        g_profile.boot_id_spoof_enabled = (args[18] == '1');
+        pr_info("lukeprivacy: boot_id_spoof=%d\n", g_profile.boot_id_spoof_enabled);
+        return 0;
+    }
     if (!strncmp(args, "set_eventtime_offset:", 21)) {
         const char *p = args + 21;
         __s64 v = 0;
