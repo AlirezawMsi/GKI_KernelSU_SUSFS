@@ -37,6 +37,8 @@ runs:
         tools/bazel build \
           --config=fast \
           --disk_cache=/home/runner/.cache/bazel \
+          --action_env=KBUILD_BUILD_TIMESTAMP \
+          --action_env=SOURCE_DATE_EPOCH \
           //common:kernel_aarch64/Image
       fi
 
