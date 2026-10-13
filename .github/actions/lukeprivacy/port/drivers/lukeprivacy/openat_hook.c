@@ -76,6 +76,14 @@ enum fd_type {
      * overlay mount label leaks our module dir name into mountinfo;
      * read_hook strips the tell-tale lines. */
     FD_TYPE_PROC_MOUNTS,
+    /* GMS reads its OWN GServices checkin android_id by a direct in-process
+     * read of gservices.db (it owns the file) — BELOW the binder cursor /
+     * settings choke-points, which is exactly why cursor_aid / ssaid never
+     * fire for the attestation id (measured 2026-10-13). read_hook rewrites
+     * the android_id value bytes in the page read so the PI/reCAPTCHA token
+     * GMS mints carries a per-container id. Appended last to keep the enum in
+     * lockstep with read_hook.c (shared fd->type integer mapping). */
+    FD_TYPE_GSERVICES_DB,
 };
 
 struct tracked_fd {
@@ -184,6 +192,38 @@ void mounts_fd_clear(int fd, int pid)
 {
     for (int i = 0; i < MAX_MOUNTS_FDS; i++)
         if (mounts_fds[i].fd == fd && mounts_fds[i].pid == pid) { mounts_fds[i].fd = 0; mounts_fds[i].pid = 0; }
+}
+
+/* Dedicated, eviction-proof tracking for GMS gservices.db fds. GMS opens the db
+ * once and queries android_id much later (attestation time), long after the
+ * 64-slot shared table has churned through GMS's file activity — same rationale
+ * as boot_id / mounts. Keyed on (fd, tgid). */
+#define MAX_GSV_FDS 256
+static struct { int fd; int pid; } gsv_fds[MAX_GSV_FDS];
+static int g_gsv_evict = 0;
+
+void gsv_fd_track(int fd, int pid)
+{
+    for (int i = 0; i < MAX_GSV_FDS; i++)
+        if (gsv_fds[i].fd == fd && gsv_fds[i].pid == pid) return;
+    for (int i = 0; i < MAX_GSV_FDS; i++)
+        if (gsv_fds[i].fd == 0) { gsv_fds[i].fd = fd; gsv_fds[i].pid = pid; return; }
+    int s = g_gsv_evict;
+    g_gsv_evict = (g_gsv_evict + 1) % MAX_GSV_FDS;
+    gsv_fds[s].fd = fd; gsv_fds[s].pid = pid;
+}
+
+int is_gsv_fd(int fd, int pid)
+{
+    for (int i = 0; i < MAX_GSV_FDS; i++)
+        if (gsv_fds[i].fd == fd && gsv_fds[i].pid == pid) return 1;
+    return 0;
+}
+
+void gsv_fd_clear(int fd, int pid)
+{
+    for (int i = 0; i < MAX_GSV_FDS; i++)
+        if (gsv_fds[i].fd == fd && gsv_fds[i].pid == pid) { gsv_fds[i].fd = 0; gsv_fds[i].pid = 0; }
 }
 
 /* Keva fd bitmap — 2048 slots using fd % 2048 as index. Not truly per-pid,
@@ -441,6 +481,14 @@ void lp_openat_hook(int dfd, const char __user *filename, int flags, long ret_fd
     else if (!strcmp(path, "/sys/devices/soc0/serial_number")) {
         type = FD_TYPE_SOC0_SERIAL;
     }
+    /* GMS GServices checkin android_id (gservices.db). GMS reads it in-process,
+     * below the binder cursor/settings hooks. Broad basename match is safe: this
+     * file is GMS-private (only uid 10167 can open it), and read_hook only
+     * rewrites when android_id_spoof is armed AND the "android_id"+digit pattern
+     * is present — a no-op on -shm / -journal / -wal index pages. */
+    else if (str_contains(path, "gservices.db")) {
+        type = FD_TYPE_GSERVICES_DB;
+    }
     /* /proc/net/if_inet6 tracking REMOVED 2026-05-11 — faking it broke TikTok
      * network-connectivity check on the signup name screen, and the dummy0
      * EUI-64 is a per-boot privacy address that doesn't leak the real WiFi MAC.
@@ -462,6 +510,7 @@ void lp_openat_hook(int dfd, const char __user *filename, int flags, long ret_fd
         /* boot_id + mounts also go in their own eviction-proof tables. */
         if (type == FD_TYPE_PROC_BOOT_ID) bootid_fd_track((int)fd, pid);
         if (type == FD_TYPE_PROC_MOUNTS) mounts_fd_track((int)fd, pid);
+        if (type == FD_TYPE_GSERVICES_DB) gsv_fd_track((int)fd, pid);
         lp_dbg("lukeprivacy: tracking fd=%d pid=%d type=%d path=%s\n", (int)fd, pid, type, path);
     }
 }
@@ -484,6 +533,7 @@ void lp_close_hook(int fd)
     clear_fd_tracking(fd, pid);
     bootid_fd_clear(fd, pid);
     mounts_fd_clear(fd, pid);
+    gsv_fd_clear(fd, pid);
     /* Also clear keva bitmap — avoids stale bit aliasing on fd reuse. */
     lp_fd_unmark_keva(fd);
 }
@@ -495,6 +545,7 @@ int openat_hook_init(void)
     memset(g_keva_fd_map, 0, sizeof(g_keva_fd_map));
     memset(bootid_fds, 0, sizeof(bootid_fds));
     memset(mounts_fds, 0, sizeof(mounts_fds));
+    memset(gsv_fds, 0, sizeof(gsv_fds));
     pr_info("lukeprivacy: openat/close choke-points ready (fd tracking)\n");
     return 0;
 }

@@ -74,6 +74,9 @@ enum fd_type {
     FD_TYPE_SOC0_REVISION,
     FD_TYPE_SOC0_SERIAL,
     FD_TYPE_PROC_MOUNTS,
+    /* GMS in-process read of gservices.db -> rewrite the checkin android_id
+     * value. MUST be the last entry, matching openat_hook.c's enum. */
+    FD_TYPE_GSERVICES_DB,
 };
 
 /* Fake content for /proc/version. SUSFS-style: drop "Wild" kernel suffix +
@@ -180,6 +183,8 @@ unsigned int g_ufs_serial_spoofed = 0;
 unsigned int g_soc0_spoofed = 0;
 unsigned int g_mountinfo_filtered = 0;
 unsigned int g_mountinfo_seen = 0;
+/* GMS gservices.db checkin-android_id rewrites (in-process read path). */
+unsigned int g_gsf_file_aid_spoofed = 0;
 /* UID-gated /proc/version redirect counter (profile.h extern).
  * Currently the existing FD_TYPE_PROC_VERSION path in lp_read_hook handles this.
  * proc_version_uid_redirect_enabled flag gates future extension (e.g. a
@@ -221,6 +226,21 @@ static void derive_hex_from_seed(unsigned long long base, char *out, int hex_len
     for (int i = 0; i < hex_len; i++) {
         if ((i & 0xf) == 0) state = lp_splitmix64(state);
         out[i] = hex[(state >> ((i & 0xf) * 4)) & 0xf];
+    }
+}
+
+/* Decimal variant for the GServices checkin android_id (stored as a numeric
+ * ASCII TEXT value). Fills exactly `n` digit chars deterministically from the
+ * seed; out[0] is forced 1..9 so the length (and thus the sqlite record byte
+ * length) is preserved identically to the original value. */
+static void derive_decimal_from_seed(unsigned long long base, char *out, int n)
+{
+    unsigned long long state = base;
+    for (int i = 0; i < n; i++) {
+        if ((i & 0xf) == 0) state = lp_splitmix64(state);
+        unsigned int d = (unsigned int)((state >> ((i & 0xf) * 4)) & 0xf) % 10u;
+        if (i == 0 && d == 0) d = 1;
+        out[i] = (char)('0' + d);
     }
 }
 
@@ -300,6 +320,7 @@ extern enum fd_type get_fd_type(int fd, int pid);
 extern void clear_fd_tracking(int fd, int pid);
 extern int is_bootid_fd(int fd, int pid);
 extern int is_mounts_fd(int fd, int pid);
+extern int is_gsv_fd(int fd, int pid);
 
 static inline bool is_valid_user_ptr(void __user *ptr)
 {
@@ -492,12 +513,17 @@ long lp_read_hook(int fd, char __user *buf, long ret)
     if (type == FD_TYPE_NONE && is_mounts_fd(fd, pid))
         type = FD_TYPE_PROC_MOUNTS;
 
+    /* gservices.db opened early, android_id queried much later (attestation):
+     * the shared table churns in between, so recover from the dedicated table. */
+    if (type == FD_TYPE_NONE && g_profile.android_id_spoof_enabled && is_gsv_fd(fd, pid))
+        type = FD_TYPE_GSERVICES_DB;
+
     if (type == FD_TYPE_NONE) return ret;
 
     /* Size-cap for fixed-size stack-buffer paths. Mount-filter path below
      * handles its own cap. Without this gate a read of e.g. 64 KB from
      * sharedprefs would overflow `char buf[4096]` and panic. */
-    if (type != FD_TYPE_PROC_MOUNTS && ret > MAX_BUF_SIZE) return ret;
+    if (type != FD_TYPE_PROC_MOUNTS && type != FD_TYPE_GSERVICES_DB && ret > MAX_BUF_SIZE) return ret;
 
     if ((type == FD_TYPE_WIFI_MAC || type == FD_TYPE_BT_MAC) && ret >= 17 && ret <= 32) {
         /* Empty-profile bail-out: when wifi_mac_hook / bt_mac_hook are off
@@ -639,6 +665,61 @@ long lp_read_hook(int fd, char __user *buf, long ret)
             memcpy(sbuf, fake_ufs_serial, hd);
             if (n > 0) lp_copy_to_user(ubuf, sbuf, n);
             g_ufs_serial_spoofed++;
+        }
+        return ret;
+    }
+    /* GMS reads its OWN GServices checkin android_id directly from gservices.db
+     * (it owns the file), BELOW the binder cursor/settings hooks — which is why
+     * neither cursor_aid nor ssaid ever covered the id DroidGuard mints the PI/
+     * reCAPTCHA token with (measured 2026-10-13: cursor_aid=0 across real
+     * attestation mints while ssaid_repl fired). Rewrite the android_id value
+     * bytes IN the page read, SAME-LENGTH (so the sqlite record stays valid),
+     * with a per-container value derived from android_id_seed. The function-level
+     * lp_is_uid_excluded() gate above already restricts this to spoof-eligible
+     * uids (GMS 10167 is pushed via set_force_spoof_uids). */
+    if (type == FD_TYPE_GSERVICES_DB) {
+        if (!g_profile.android_id_spoof_enabled || !g_profile.android_id_seed[0])
+            return ret;
+        size_t cap = (size_t)ret;
+        if (cap > MAX_BUF_SIZE - 1) cap = MAX_BUF_SIZE - 1;
+        char gbuf[MAX_BUF_SIZE];
+        long gcopied = lp_copy_from_user(gbuf, ubuf, cap);
+        if (gcopied <= 11) return ret;
+        size_t glen = (size_t)gcopied;
+        unsigned long long seed = parse_seed_u64(g_profile.android_id_seed);
+        bool gmod = false;
+        for (size_t i = 0; i + 11 <= glen; i++) {
+            if (gbuf[i] != 'a') continue;
+            if (!(gbuf[i+1]=='n' && gbuf[i+2]=='d' && gbuf[i+3]=='r' && gbuf[i+4]=='o' &&
+                  gbuf[i+5]=='i' && gbuf[i+6]=='d' && gbuf[i+7]=='_' && gbuf[i+8]=='i' &&
+                  gbuf[i+9]=='d'))
+                continue;
+            size_t v = i + 10;
+            /* The "android_id" KEY stores a numeric value adjacent in the record
+             * payload; every other key ending in "android_id" is followed by a
+             * non-digit ("true"), so a digit here uniquely identifies the real
+             * checkin id. */
+            if (v >= glen || gbuf[v] < '0' || gbuf[v] > '9')
+                continue;
+            size_t vl = 0;
+            while (v + vl < glen && gbuf[v+vl] >= '0' && gbuf[v+vl] <= '9')
+                vl++;
+            /* Skip if the run reaches the copied boundary (value may continue
+             * into the next read) or is an implausible length for a 64-bit id. */
+            if (v + vl >= glen || vl < 8 || vl > 20)
+                continue;
+            {
+                char dec[24];
+                derive_decimal_from_seed(lp_splitmix64(seed ^ 0x47534641494430ULL /* "GSFAID0" */),
+                                         dec, (int)vl);
+                for (size_t k = 0; k < vl; k++) gbuf[v + k] = dec[k];
+            }
+            gmod = true;
+            i = v + vl - 1;   /* loop ++ advances past the value */
+        }
+        if (gmod) {
+            lp_copy_to_user(ubuf, gbuf, glen);
+            g_gsf_file_aid_spoofed++;
         }
         return ret;
     }

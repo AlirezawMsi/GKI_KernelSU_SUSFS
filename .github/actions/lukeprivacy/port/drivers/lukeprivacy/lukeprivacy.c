@@ -1455,6 +1455,7 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
         extern unsigned int g_battery_serial_spoofed, g_display_serial_spoofed, g_ufs_serial_spoofed;
         extern unsigned int g_soc0_spoofed;
         extern unsigned int g_mountinfo_filtered, g_mountinfo_seen;
+        extern unsigned int g_gsf_file_aid_spoofed;
         /* New counters from gap-plan A3/A5/A6/A7/A4 */
         extern unsigned int g_ssaid_anchor_fail[8];
         extern unsigned int g_ssaid_debug_enabled;
@@ -1468,14 +1469,14 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
             "user=%d kern=%d imei=%d imsi=%d iccid=%d mcc=%d country=%d uuid=%d drm=%d loc=%d gnss=%d gnss_st=%d cell=%d wifi=%d adb=%d dnt=%d netinfo=%d netcaps=%d cname=%d ph_seen=%d ph_repl=%d uidmap_ins=%u uidmap_evict=%u uidmap_hit=%u uidmap_miss=%u ssaid_seen=%u ssaid_repl=%u ssaid_rlx=%u sens_seen=%u sens_acc=%u sens_gyr=%u sens_grav=%u prop_seen=%u prop_blk=%u proc_ver=%u proc_cpu=%u proc_in6=%u bootid=%u bat_sn=%u disp_sn=%u ufs_sn=%u soc0=%u mnt_filt=%u"
             " ssaid_af0=%u ssaid_af1=%u ssaid_af2=%u ssaid_af3=%u ssaid_af4=%u ssaid_af5=%u ssaid_af6=%u ssaid_af7=%u"
             " gaid_repl=%u hpb_repl=%u pver_uid=%u tz_repl=%u statfs_seen=%u statfs_repl=%u mnt_seen=%u"
-            " stat_seen=%u stat_ovl=%u stat_repl=%u bs_seen=%u bs_neut=%u cam_repl=%u cursor_aid=%u",
+            " stat_seen=%u stat_ovl=%u stat_repl=%u bs_seen=%u bs_neut=%u cam_repl=%u cursor_aid=%u gsf_file_aid=%u",
             g_binder_copy_calls, g_kernel_copy_calls, g_binder_imei_spoofed, g_binder_imsi_spoofed, g_binder_iccid_spoofed, g_binder_mcc_spoofed, g_binder_country_spoofed, g_binder_uuid_spoofed, g_binder_mediadrm_spoofed, g_binder_location_spoofed, g_gnss_location_spoofed, g_gnss_status_spoofed, g_cellinfo_spoofed, g_wifiinfo_spoofed, g_adb_hidden, g_dnt_spoofed, g_netinfo_spoofed, g_netcaps_spoofed, g_carrier_name_spoofed, g_phone_bare_seen, g_phone_bare_replaced, g_uid_map_inserts, g_uid_map_evicts, g_uid_map_lookups_hit, g_uid_map_lookups_miss, g_ssaid_seen, g_ssaid_replaced, g_ssaid_relaxed_replaced, g_sensor_events_seen, g_sensor_accel_spoofed, g_sensor_gyro_spoofed, g_sensor_gravity_spoofed, g_prop_writes_seen, g_prop_writes_blocked, g_proc_version_spoofed, g_proc_cpuinfo_spoofed, g_proc_inet6_spoofed, g_boot_id_spoofed, g_battery_serial_spoofed, g_display_serial_spoofed, g_ufs_serial_spoofed, g_soc0_spoofed, g_mountinfo_filtered,
             g_ssaid_anchor_fail[0], g_ssaid_anchor_fail[1], g_ssaid_anchor_fail[2], g_ssaid_anchor_fail[3],
             g_ssaid_anchor_fail[4], g_ssaid_anchor_fail[5], g_ssaid_anchor_fail[6], g_ssaid_anchor_fail[7],
             g_gaid_binder_repl, g_hostbridge_repl, g_proc_version_uid_repl, g_timezone_repl,
             g_statfs_overlay_seen, g_statfs_overlay_rewritten, g_mountinfo_seen,
             g_stat_seen, g_stat_overlay_seen, g_stat_rewritten,
-            g_blockstore_seen, g_blockstore_neutralized, g_camera_cal_spoofed, g_cursor_aid_spoofed);
+            g_blockstore_seen, g_blockstore_neutralized, g_camera_cal_spoofed, g_cursor_aid_spoofed, g_gsf_file_aid_spoofed);
         compat_copy_to_user(out_msg, buf, strlen(buf) + 1);
         return 0;
     }
