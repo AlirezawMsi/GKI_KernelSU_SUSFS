@@ -140,11 +140,13 @@ jobs:
         else
           OS_PATCH_LEVEL_YM="$OS_PATCH_LEVEL_INPUT"
         fi
-        FIXED_BUILD_DATE="${OS_PATCH_LEVEL_YM}-05 04:20:00 UTC"
+        # GENUINE banner (lockstep with read_hook.c FAKE_PROC_VERSION so the RAW
+        # kernel banner GMS reads == what luke serves for /proc/version). The
+        # space-padded "Oct  6" is set literally (date '+%d' would give "06").
+        FIXED_BUILD_DATE="2025-10-06 16:50:48 UTC"
         SOURCE_DATE_EPOCH=$(date -u -d "$FIXED_BUILD_DATE" +%s)
         echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> $GITHUB_ENV
-        KBUILD_TS=$(date -u -d @${SOURCE_DATE_EPOCH} '+%a %b %d %H:%M:%S UTC %Y')
-        echo "KBUILD_BUILD_TIMESTAMP=${KBUILD_TS}" >> $GITHUB_ENV
+        echo "KBUILD_BUILD_TIMESTAMP=Mon Oct  6 16:50:48 UTC 2025" >> $GITHUB_ENV
         # Keep git metadata aligned with the same fixed timestamp.
         GIT_DATE=$(date -u -d @${SOURCE_DATE_EPOCH} '+%Y-%m-%dT%H:%M:%SZ')
         echo "GIT_COMMITTER_DATE=${GIT_DATE}" >> $GITHUB_ENV
