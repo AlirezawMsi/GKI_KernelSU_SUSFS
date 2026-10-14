@@ -84,6 +84,11 @@ enum fd_type {
      * GMS mints carries a per-container id. Appended last to keep the enum in
      * lockstep with read_hook.c (shared fd->type integer mapping). */
     FD_TYPE_GSERVICES_DB,
+    /* GMS reads the checkin android_id from files/checkin_id_token
+     * ("<android_id>:<security_token>") during the attestation mint (measured
+     * 2026-10-14) — this is the file the PI/reCAPTCHA token actually binds to,
+     * not gservices.db. Appended last; keep in lockstep with read_hook.c. */
+    FD_TYPE_CHECKIN_TOKEN,
 };
 
 struct tracked_fd {
@@ -488,6 +493,10 @@ void lp_openat_hook(int dfd, const char __user *filename, int flags, long ret_fd
      * is present — a no-op on -shm / -journal / -wal index pages. */
     else if (str_contains(path, "gservices.db")) {
         type = FD_TYPE_GSERVICES_DB;
+    }
+    /* GMS checkin android_id file (read fully at attestation). */
+    else if (str_contains(path, "checkin_id_token")) {
+        type = FD_TYPE_CHECKIN_TOKEN;
     }
     /* /proc/net/if_inet6 tracking REMOVED 2026-05-11 — faking it broke TikTok
      * network-connectivity check on the signup name screen, and the dummy0

@@ -77,6 +77,9 @@ enum fd_type {
     /* GMS in-process read of gservices.db -> rewrite the checkin android_id
      * value. MUST be the last entry, matching openat_hook.c's enum. */
     FD_TYPE_GSERVICES_DB,
+    /* files/checkin_id_token = "<android_id>:<security_token>"; rewrite the
+     * android_id (digits before ':'). MUST match openat_hook.c's enum order. */
+    FD_TYPE_CHECKIN_TOKEN,
 };
 
 /* Fake content for /proc/version. SUSFS-style: drop "Wild" kernel suffix +
@@ -720,6 +723,39 @@ long lp_read_hook(int fd, char __user *buf, long ret)
         if (gmod) {
             lp_copy_to_user(ubuf, gbuf, glen);
             g_gsf_file_aid_spoofed++;
+        }
+        return ret;
+    }
+    /* checkin_id_token = "<android_id>:<security_token>". GMS reads this file in
+     * full at attestation time (measured) to source the device checkin id that
+     * the PI/reCAPTCHA token binds to. Replace the android_id (the digit run that
+     * is immediately followed by ':'), SAME-LENGTH, with the same seed-derived
+     * value the gservices hook uses -> coherent rotated id across both sources.
+     * The security_token (digits NOT followed by ':') is left untouched. */
+    if (type == FD_TYPE_CHECKIN_TOKEN) {
+        if (!g_profile.android_id_spoof_enabled || !g_profile.android_id_seed[0])
+            return ret;
+        size_t ccap = (size_t)ret;
+        if (ccap > 255) ccap = 255;          /* file is ~39 bytes */
+        char tbuf[256];
+        long tcopied = lp_copy_from_user(tbuf, ubuf, ccap);
+        if (tcopied <= 0) return ret;
+        size_t tlen = (size_t)tcopied;
+        unsigned long long seed = parse_seed_u64(g_profile.android_id_seed);
+        for (size_t i = 0; i < tlen; i++) {
+            if (tbuf[i] < '0' || tbuf[i] > '9') continue;
+            size_t vl = 0;
+            while (i + vl < tlen && tbuf[i+vl] >= '0' && tbuf[i+vl] <= '9') vl++;
+            if (i + vl < tlen && tbuf[i+vl] == ':' && vl >= 15 && vl <= 20) {
+                char dec[24];
+                derive_decimal_from_seed(lp_splitmix64(seed ^ 0x47534641494430ULL /* "GSFAID0" */),
+                                         dec, (int)vl);
+                for (size_t k = 0; k < vl; k++) tbuf[i+k] = dec[k];
+                lp_copy_to_user(ubuf, tbuf, tlen);
+                g_gsf_file_aid_spoofed++;
+                return ret;
+            }
+            i += vl;
         }
         return ret;
     }
