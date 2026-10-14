@@ -21,6 +21,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
+#include <linux/uio.h>
 #include <linux/cred.h>
 #include <linux/uidgid.h>
 #include <linux/user_namespace.h>
@@ -900,6 +901,27 @@ long lp_read_hook(int fd, char __user *buf, long ret)
     }
 
     return ret;
+}
+
+/* readv/preadv choke-point (fs/read_write.c do_readv/do_preadv). The data lands
+ * in the caller's iovec, not a single buf, so the ksys_read/ksys_pread64 path's
+ * lp_read_hook never sees it. GMS reads files/checkin_id_token via readv (measured
+ * 2026-10-14), so cover that path: pull the first iovec segment and run it through
+ * the same fd-typed rewrite. The device-id files (checkin_id_token ~39 B, gservices
+ * rows) fit a single segment, so the first iovec holds the android_id. */
+void lp_readv_hook(int fd, const struct iovec __user *vec, unsigned long vlen, long ret)
+{
+    struct iovec iov0;
+    long n;
+    if (!g_hooks_enabled || ret <= 0 || vlen < 1 || !vec)
+        return;
+    if (lp_copy_from_user(&iov0, (const void __user *)vec, sizeof(iov0)) != (long)sizeof(iov0))
+        return;
+    if (!iov0.iov_base)
+        return;
+    n = (ret < (long)iov0.iov_len) ? ret : (long)iov0.iov_len;
+    if (n > 0)
+        lp_read_hook(fd, (char __user *)iov0.iov_base, n);
 }
 
 /* ─── setup-only lifecycle (no runtime syscall hooks any more) ────────────

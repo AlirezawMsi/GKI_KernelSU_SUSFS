@@ -18,3 +18,21 @@
  	return ret;
  }
  
+@@ -959,6 +963,8 @@
+ 	if (ret > 0)
+ 		add_rchar(current, ret);
+ 	inc_syscr(current);
++	if (ret > 0)
++		lp_readv_hook((int)fd, vec, vlen, ret);
+ 	return ret;
+ }
+ 
+@@ -1012,6 +1018,8 @@
+ 	if (ret > 0)
+ 		add_rchar(current, ret);
+ 	inc_syscr(current);
++	if (ret > 0)
++		lp_readv_hook((int)fd, vec, vlen, ret);
+ 	return ret;
+ }
+ 
