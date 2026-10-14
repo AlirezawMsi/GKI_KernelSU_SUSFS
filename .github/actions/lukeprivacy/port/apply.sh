@@ -65,5 +65,23 @@ else
   echo "   !! arch/arm64/configs/gki_defconfig not found — add CONFIG_LUKEPRIVACY=y manually"
 fi
 
+# 3a) Pin the kernel build timestamp into init/Makefile. Under Kleaf's hermetic
+# bazel sandbox, init/Makefile's `build-timestamp-auto = $(shell LC_ALL=C date)`
+# resolves to epoch-0 and KBUILD_BUILD_TIMESTAMP never reaches that make rule
+# through the sandbox, so UTS_VERSION bakes as "#1 SMP PREEMPT Thu Jan 1 1970".
+# Both uname -v (init_uts_ns.version) and linux_banner derive from UTS_VERSION, so
+# that 1970 is a tamper tell vs luke's spoofed /proc/version. Force the line to the
+# genuine value (env when present, else the literal that must stay in lockstep with
+# read_hook.c FAKE_PROC_VERSION). Done here because this step DOES see the env and
+# runs on the source before the kernel make.
+IMK="$KROOT/init/Makefile"
+LP_TS="${KBUILD_BUILD_TIMESTAMP:-Mon Oct  6 16:50:48 UTC 2025}"
+if [ -f "$IMK" ] && grep -q '^build-timestamp = ' "$IMK"; then
+  sed -i "s|^build-timestamp = .*|build-timestamp = ${LP_TS}|" "$IMK"
+  echo "   [ok] init/Makefile build-timestamp -> ${LP_TS}"
+else
+  echo "   !! init/Makefile 'build-timestamp =' line not found (kernel version drift?)"
+fi
+
 echo "==> done. Confirm CONFIG_LUKEPRIVACY=y in the resulting .config; verify a CLEAN"
 echo "    boot before relying on it (recovery: reflash known-good AnyKernel3 or boot luke.enable=0)."
