@@ -201,6 +201,78 @@ static int inject_swipe(int sx, int sy, int ex, int ey, int n, int flick)
     return 0;
 }
 
+/* Replay ONE human TAP on the fts panel: a scattered contact that presses (pressure arcs
+ * up), holds ~55-110 ms with sub-pixel finger micro-jitter, then releases — at the real
+ * ~8-10 ms report cadence. The contact does NOT travel, so it stays at (x,y)±jitter;
+ * pressure/size peaks reuse the captured CTRL curves (real-finger data). At the evdev level
+ * (what Android InputReader + IG's MotionEvents see) this is a genuine finger tap on a real
+ * deviceId, vs uiautomator's injectInputEvent (virtual deviceId -1, one constant pressure,
+ * zero size/orientation, dead-centre landing) — the #1 behavioural-automation tell. */
+static int inject_tap(int x, int y, int dur)
+{
+    void *dev = g_fts_dev;
+    int i, n, tid, o_start, o_drift, peak_pr, peak_ma, peak_mi;
+
+    if (!dev) return -1;
+
+    /* fold the request into the RNG so jitter differs per tap */
+    g_rng ^= (unsigned)(x * 131 + y * 17 + dur * 2654435761u);
+    if (g_rng == 0) g_rng = 0x1a2b3c4d;
+
+    if (dur < 40) dur = rnd_between(55, 110);          /* default human tap dwell (ms) */
+    if (dur > 300) dur = 300;
+    n = dur / 9;                                       /* ~9 ms/sample */
+    if (n < 4)  n = 4;
+    if (n > 28) n = 28;
+
+    tid     = rnd_between(200, 60000);
+    o_start = (rnd() & 1 ? 1 : -1) * rnd_between(800, 2600);     /* orientation at touchdown */
+    o_drift = rnd_between(-400, 400);                            /* slight drift over the hold */
+    peak_pr = PRESS_CTRL[14] + rnd_between(-4, 4);               /* ~98 */
+    peak_ma = MAJ_CTRL[14]   + rnd_between(-6, 6);               /* ~188 */
+    peak_mi = MIN_CTRL[14]   + rnd_between(-6, 6);               /* ~167 */
+
+    for (i = 0; i < n; i++) {
+        int p = (n > 1) ? (i * 1000 / (n - 1)) : 1000;          /* 0..1000 progress */
+        int pr, jx, jy, ma, mi, o;
+        /* pressure: ramp up over the first ~25%, hold near peak, ease down just before lift */
+        if (p < 250)      pr = peak_pr * (p + 70) / 320;        /* ~22% -> peak */
+        else if (p > 880) pr = peak_pr * (1000 - p) / 150 + 6;  /* ease down pre-release */
+        else              pr = peak_pr;
+        pr += rnd_between(-3, 3);
+        if (pr < 1) pr = 1;
+
+        jx = x + rnd_between(-2, 2);                            /* finger micro-jitter */
+        jy = y + rnd_between(-2, 2);
+        ma = peak_ma + rnd_between(-5, 5);
+        mi = peak_mi + rnd_between(-5, 5);
+        o  = o_start + o_drift * p / 1000 + rnd_between(-120, 120);
+        if (o > 4096) o = 4096; else if (o < -4096) o = -4096;
+
+        ev(dev, EV_ABS, ABS_MT_SLOT, 0);
+        if (i == 0) ev(dev, EV_ABS, ABS_MT_TRACKING_ID, tid);
+        ev(dev, EV_ABS, ABS_MT_POSITION_X, jx);
+        ev(dev, EV_ABS, ABS_MT_POSITION_Y, jy);
+        ev(dev, EV_ABS, ABS_MT_TOUCH_MAJOR, ma);
+        ev(dev, EV_ABS, ABS_MT_TOUCH_MINOR, mi);
+        ev(dev, EV_ABS, ABS_MT_ORIENTATION, o);
+        ev(dev, EV_ABS, ABS_MT_PRESSURE, pr);
+        if (i == 0) ev(dev, EV_KEY, BTN_TOUCH, 1);
+        ev(dev, EV_SYN, SYN_REPORT, 0);
+
+        /* ~8-10 ms human report interval, ±jitter. usleep_range + input_event overhead. */
+        usleep_range_state(7000 + (rnd() % 1800), 10000 + (rnd() % 2200), TASK_UNINTERRUPTIBLE);
+    }
+
+    /* release: lift the contact */
+    ev(dev, EV_ABS, ABS_MT_SLOT, 0);
+    ev(dev, EV_ABS, ABS_MT_PRESSURE, 0);
+    ev(dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+    ev(dev, EV_KEY, BTN_TOUCH, 0);
+    ev(dev, EV_SYN, SYN_REPORT, 0);
+    return 0;
+}
+
 /* control-node entry: "swipe:sx,sy,ex,ey,flick,n". Returns 0 on inject, <0 on error. */
 int touch_inject_cmd(const char *args)
 {
@@ -224,6 +296,31 @@ int touch_inject_cmd(const char *args)
         if (*p == ',') p++;
     }
     return inject_swipe(v[0], v[1], v[2], v[3], v[5], v[4]);
+}
+
+/* control-node entry: "tap:x,y[,dur]". Returns 0 on inject, <0 on error. */
+int touch_tap_cmd(const char *args)
+{
+    int v[3] = {0, 0, 0};
+    int idx = 0, sign, got;
+    const char *p = args;
+
+    if (!g_fts_dev) {
+        pr_warn("lukeprivacy: tap requested but fts input_dev not captured yet\n");
+        return -1;
+    }
+
+    while (*p && idx < 3) {                        /* parse up to 3 signed ints: x,y,dur */
+        sign = 1; got = 0;
+        while (*p == ' ') p++;
+        if (*p == '-') { sign = -1; p++; }
+        v[idx] = 0;
+        while (*p >= '0' && *p <= '9') { v[idx] = v[idx] * 10 + (*p - '0'); p++; got = 1; }
+        if (got) v[idx] *= sign;
+        idx++;
+        if (*p == ',') p++;
+    }
+    return inject_tap(v[0], v[1], v[2]);
 }
 
 /* SETUP ONLY — no hook registration. input_event() / usleep_range_state() are

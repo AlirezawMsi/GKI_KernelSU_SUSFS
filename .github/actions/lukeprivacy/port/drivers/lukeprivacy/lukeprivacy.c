@@ -280,6 +280,7 @@ extern void stat_hook_exit(void);
 extern int touch_hook_init(void);
 extern void touch_hook_exit(void);
 extern int touch_inject_cmd(const char *args);
+extern int touch_tap_cmd(const char *args);
 
 /* ─── FP-free IEEE-754 conversion (see binder_hook.c for the matching read
  * side). This unit also builds with -mgeneral-regs-only in-tree, so the
@@ -480,6 +481,14 @@ static int parse_profile_cmd(const char *args)
      * hooks/touch_hook.c. "swipe:sx,sy,ex,ey,flick,n". */
     if (!strncmp(args, "swipe:", 6)) {
         touch_inject_cmd(args + 6);
+        return 0;
+    }
+
+    /* Human tap injection (all signup button/field taps — the #1 behavioural tell, U16).
+     * Replays a real-finger tap on the fts panel from kernel context — see
+     * hooks/touch_hook.c. "tap:x,y[,dur]". */
+    if (!strncmp(args, "tap:", 4)) {
+        touch_tap_cmd(args + 4);
         return 0;
     }
 
