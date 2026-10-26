@@ -527,7 +527,9 @@ long lp_read_hook(int fd, char __user *buf, long ret)
     /* Size-cap for fixed-size stack-buffer paths. Mount-filter path below
      * handles its own cap. Without this gate a read of e.g. 64 KB from
      * sharedprefs would overflow `char buf[4096]` and panic. */
-    if (type != FD_TYPE_PROC_MOUNTS && type != FD_TYPE_GSERVICES_DB && ret > MAX_BUF_SIZE) return ret;
+    /* K-2 (spoof audit 2026-10-26): `>=` not `>` — a read of exactly MAX_BUF_SIZE also needs
+     * room for cbuf[copied]=' ' (one-byte stack OOB otherwise). */
+    if (type != FD_TYPE_PROC_MOUNTS && type != FD_TYPE_GSERVICES_DB && ret >= MAX_BUF_SIZE) return ret;
 
     if ((type == FD_TYPE_WIFI_MAC || type == FD_TYPE_BT_MAC) && ret >= 17 && ret <= 32) {
         /* Empty-profile bail-out: when wifi_mac_hook / bt_mac_hook are off

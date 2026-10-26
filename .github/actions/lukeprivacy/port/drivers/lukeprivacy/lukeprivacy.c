@@ -1242,7 +1242,10 @@ static int lp_proc_open(struct inode *ino, struct file *f)
 static ssize_t lp_proc_write(struct file *f, const char __user *ubuf,
                              size_t len, loff_t *off)
 {
-    char kbuf[512];
+    /* K-1 hardening (spoof audit 2026-10-26): 512 silently rejected bulk commands
+     * (notably add_excluded_uids with a full third-party uid list) — the farm now chunks
+     * to 40 uids per write as well; this makes the kernel side tolerant of honest pushes. */
+    char kbuf[4096];
     char resp[64];
     if (!lp_uid_ok())
         return -ENOENT;
