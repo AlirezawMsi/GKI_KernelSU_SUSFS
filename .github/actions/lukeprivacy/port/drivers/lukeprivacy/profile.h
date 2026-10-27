@@ -276,6 +276,14 @@ struct spoof_profile {
      * within one boot session (a linking signal), only changing on reboot. */
     bool boot_id_spoof_enabled;
 
+    /* /proc/net/tcp + /proc/net/tcp6 listener-row hide. read_hook drops any row whose LOCAL
+     * port is an instacore relay port (8899 CONNECT / 8391 transparent SNI) from the table
+     * delivered to spoof-target uids (IG + force-spoofed GMS); root/system read the real
+     * table. The listener lives in IG's shared netns, so moving its owner-uid out of IG does
+     * NOT hide the row — only this kernel row-filter does. Default off; armed per-session by
+     * kpm_apply.sh set_nethide:1. Ports hardcoded in read_hook.c LP_NETHIDE_PORTS. */
+    bool net_hide_enabled;
+
     /* Timezone binder hook. Companion already handles persist.sys.timezone
      * via resetprop. If this flag is false (default), no binder hook fires.
      * Kept in profile for future extension. See A8 in gap plan. */
@@ -393,6 +401,9 @@ extern unsigned int g_hostbridge_repl;
 
 /* /proc/version UID-gated redirect counter. Defined in read_hook.c. */
 extern unsigned int g_proc_version_uid_repl;
+
+/* /proc/net/tcp listener-row filter counter (rows dropped). Defined in read_hook.c. */
+extern unsigned int g_net_tcp_filtered;
 
 /* Timezone binder hook counter. Defined in binder_hook.c. */
 extern unsigned int g_timezone_repl;
