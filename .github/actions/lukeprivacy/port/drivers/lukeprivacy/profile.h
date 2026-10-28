@@ -408,6 +408,7 @@ extern unsigned int g_proc_version_uid_repl;
 
 /* /proc/net/tcp listener-row filter counter (rows dropped). Defined in read_hook.c. */
 extern unsigned int g_net_tcp_filtered;
+extern unsigned int g_net_unix_filtered;
 
 /* Timezone binder hook counter. Defined in binder_hook.c. */
 extern unsigned int g_timezone_repl;

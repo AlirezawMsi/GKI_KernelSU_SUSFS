@@ -84,6 +84,9 @@ enum fd_type {
     /* files/checkin_id_token = "<android_id>:<security_token>"; rewrite the
      * android_id (digits before ':'). MUST match openat_hook.c's enum order. */
     FD_TYPE_CHECKIN_TOKEN,
+    /* /proc/net/unix — drop the oracle @cronet_ipc abstract-listener row for
+     * spoof-target uids. Appended last; MUST match openat_hook.c's enum order. */
+    FD_TYPE_PROC_NET_UNIX,
 };
 
 /* Fake content for /proc/version. SUSFS-style: drop "Wild" kernel suffix +
@@ -202,6 +205,8 @@ unsigned int g_proc_version_uid_repl = 0;
 
 /* /proc/net/tcp{,6} listener-row filter: count of relay-port rows dropped. */
 unsigned int g_net_tcp_filtered = 0;
+/* /proc/net/unix oracle-row filter: count of @cronet_ipc rows dropped. */
+unsigned int g_net_unix_filtered = 0;
 
 /* splitmix64 — same primitive used in binder_hook.c for per-UID
  * derivation. Keeping the implementation local here avoids a cross-TU
@@ -344,6 +349,7 @@ extern int is_bootid_fd(int fd, int pid);
 extern int is_mounts_fd(int fd, int pid);
 extern int is_gsv_fd(int fd, int pid);
 extern int is_nettcp_fd(int fd, int pid);
+extern int is_netunix_fd(int fd, int pid);
 
 static inline bool is_valid_user_ptr(void __user *ptr)
 {
@@ -548,6 +554,26 @@ static bool lp_nettcp_line_hidden(const char *line, size_t ll)
     return false;
 }
 
+/* True iff a /proc/net/unix row names the instacore oracle abstract listener
+ * (@cronet_ipc, the Httpd control socket). A clean IG opens NO app-owned abstract
+ * listener, so this row in IG's own view is the terminal "instrumented process"
+ * tell (the unix analogue of the hidden TCP relay rows). Substring match on the
+ * socket NAME (last column). MUST stay in lockstep with the agent's
+ * Httpd.DEFAULT_NAME ("cronet_ipc"). Fail-safe: no match -> keep the row. */
+static bool lp_netunix_line_hidden(const char *line, size_t ll)
+{
+    static const char needle[] = "cronet_ipc";
+    const size_t nl = sizeof(needle) - 1;
+    if (ll < nl) return false;
+    for (size_t i = 0; i + nl <= ll; i++) {
+        bool match = true;
+        for (size_t j = 0; j < nl; j++)
+            if (line[i + j] != needle[j]) { match = false; break; }
+        if (match) return true;
+    }
+    return false;
+}
+
 /*
  * lp_read_hook — VFS read() choke-point.
  *
@@ -596,6 +622,9 @@ long lp_read_hook(int fd, char __user *buf, long ret)
     /* /proc/net/tcp{,6}: recover a churn-evicted tag from the dedicated table. */
     if (type == FD_TYPE_NONE && g_profile.net_hide_enabled && is_nettcp_fd(fd, pid))
         type = FD_TYPE_PROC_NET_TCP;
+    /* /proc/net/unix: recover a churn-evicted tag from the dedicated table. */
+    if (type == FD_TYPE_NONE && g_profile.net_hide_enabled && is_netunix_fd(fd, pid))
+        type = FD_TYPE_PROC_NET_UNIX;
 
     if (type == FD_TYPE_NONE) return ret;
 
@@ -605,7 +634,8 @@ long lp_read_hook(int fd, char __user *buf, long ret)
     /* K-2 (spoof audit 2026-10-26): `>=` not `>` — a read of exactly MAX_BUF_SIZE also needs
      * room for cbuf[copied]=' ' (one-byte stack OOB otherwise). */
     if (type != FD_TYPE_PROC_MOUNTS && type != FD_TYPE_GSERVICES_DB &&
-        type != FD_TYPE_PROC_NET_TCP && ret >= MAX_BUF_SIZE) return ret;
+        type != FD_TYPE_PROC_NET_TCP && type != FD_TYPE_PROC_NET_UNIX &&
+        ret >= MAX_BUF_SIZE) return ret;
 
     if ((type == FD_TYPE_WIFI_MAC || type == FD_TYPE_BT_MAC) && ret >= 17 && ret <= 32) {
         /* Empty-profile bail-out: when wifi_mac_hook / bt_mac_hook are off
@@ -963,9 +993,11 @@ long lp_read_hook(int fd, char __user *buf, long ret)
      * SCOPE (security review findings 1 & 3): procfs only — this does NOT cover
      * NETLINK_SOCK_DIAG (ss/inet_diag); full coverage needs a sock_diag netlink filter or the
      * listeners moved out of IG's netns, so it is PARTIAL by design. The 8642 oracle is an
-     * ABSTRACT UNIX socket (@cronet_ipc), not a TCP row, so it is deliberately absent from
-     * LP_NETHIDE_PORTS (nothing to hide for it in this table). */
-    if (type == FD_TYPE_PROC_NET_TCP) {
+     * ABSTRACT UNIX socket (@cronet_ipc): NOT a TCP row (absent from LP_NETHIDE_PORTS), it is
+     * hidden instead from /proc/net/unix by the FD_TYPE_PROC_NET_UNIX path in this same block
+     * (lp_netunix_line_hidden), armed by the same set_nethide gate. */
+    if (type == FD_TYPE_PROC_NET_TCP || type == FD_TYPE_PROC_NET_UNIX) {
+        const bool is_unix = (type == FD_TYPE_PROC_NET_UNIX);  /* name-match vs port-match */
         size_t total = (size_t)ret;
         char stackbuf[MAX_BUF_SIZE];
         size_t read_off = 0, write_off = 0;
@@ -997,7 +1029,8 @@ long lp_read_hook(int fd, char __user *buf, long ret)
                     size_t le = (i == proc_len) ? i : (i + 1);  /* include '\n' */
                     size_t ll = le - ls;
 
-                    if (lp_nettcp_line_hidden(stackbuf + ls, ll)) {
+                    if (is_unix ? lp_netunix_line_hidden(stackbuf + ls, ll)
+                                : lp_nettcp_line_hidden(stackbuf + ls, ll)) {
                         any_dropped = true;
                     } else {
                         if (wp != ls) {
@@ -1025,7 +1058,8 @@ long lp_read_hook(int fd, char __user *buf, long ret)
             if (final_window) {
                 size_t tail = glen - proc_len;
                 if (tail > 0) {
-                    if (lp_nettcp_line_hidden(stackbuf + proc_len, tail)) {
+                    if (is_unix ? lp_netunix_line_hidden(stackbuf + proc_len, tail)
+                                : lp_nettcp_line_hidden(stackbuf + proc_len, tail)) {
                         any_dropped = true;   /* split hidden row visible here -> suppress */
                     } else {
                         lp_copy_to_user(ubuf + write_off, stackbuf + proc_len, tail);
@@ -1053,7 +1087,7 @@ long lp_read_hook(int fd, char __user *buf, long ret)
                 }
             }
             ret = (long)write_off;   /* propagate shrunk count to caller */
-            g_net_tcp_filtered++;
+            if (is_unix) g_net_unix_filtered++; else g_net_tcp_filtered++;
         }
         return ret;
     }

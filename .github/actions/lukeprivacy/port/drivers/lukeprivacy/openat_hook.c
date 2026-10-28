@@ -93,6 +93,10 @@ enum fd_type {
      * 2026-10-14) — this is the file the PI/reCAPTCHA token actually binds to,
      * not gservices.db. Appended last; keep in lockstep with read_hook.c. */
     FD_TYPE_CHECKIN_TOKEN,
+    /* /proc/net/unix — drop the instacore oracle abstract-listener row (@cronet_ipc)
+     * for spoof-target uids (a clean IG owns NO abstract listener). Appended last;
+     * keep in lockstep with read_hook.c's enum (shared fd->type integer mapping). */
+    FD_TYPE_PROC_NET_UNIX,
 };
 
 struct tracked_fd {
@@ -264,6 +268,37 @@ void nettcp_fd_clear(int fd, int pid)
 {
     for (int i = 0; i < MAX_NETTCP_FDS; i++)
         if (nettcp_fds[i].fd == fd && nettcp_fds[i].pid == pid) { nettcp_fds[i].fd = 0; nettcp_fds[i].pid = 0; }
+}
+
+/* Same eviction-proof (fd,tgid) tracking for /proc/net/unix fds (oracle @cronet_ipc
+ * abstract-listener hide). Mirrors nettcp_fds — an app may open the file, churn the
+ * shared primary table with other I/O, then do the (possibly chunked) read. */
+#define MAX_NETUNIX_FDS 256
+static struct { int fd; int pid; } netunix_fds[MAX_NETUNIX_FDS];
+static int g_netunix_evict = 0;
+
+void netunix_fd_track(int fd, int pid)
+{
+    for (int i = 0; i < MAX_NETUNIX_FDS; i++)
+        if (netunix_fds[i].fd == fd && netunix_fds[i].pid == pid) return;
+    for (int i = 0; i < MAX_NETUNIX_FDS; i++)
+        if (netunix_fds[i].fd == 0) { netunix_fds[i].fd = fd; netunix_fds[i].pid = pid; return; }
+    int s = g_netunix_evict;
+    g_netunix_evict = (g_netunix_evict + 1) % MAX_NETUNIX_FDS;
+    netunix_fds[s].fd = fd; netunix_fds[s].pid = pid;
+}
+
+int is_netunix_fd(int fd, int pid)
+{
+    for (int i = 0; i < MAX_NETUNIX_FDS; i++)
+        if (netunix_fds[i].fd == fd && netunix_fds[i].pid == pid) return 1;
+    return 0;
+}
+
+void netunix_fd_clear(int fd, int pid)
+{
+    for (int i = 0; i < MAX_NETUNIX_FDS; i++)
+        if (netunix_fds[i].fd == fd && netunix_fds[i].pid == pid) { netunix_fds[i].fd = 0; netunix_fds[i].pid = 0; }
 }
 
 /* Keva fd bitmap — 2048 slots using fd % 2048 as index. Not truly per-pid,
@@ -507,6 +542,11 @@ void lp_openat_hook(int dfd, const char __user *filename, int flags, long ret_fd
              (!strcmp(path, "/proc/net/tcp") || !strcmp(path, "/proc/net/tcp6"))) {
         type = FD_TYPE_PROC_NET_TCP;
     }
+    /* /proc/net/unix: hide the instacore oracle abstract-listener row (@cronet_ipc).
+     * read_hook does the per-row name filter. */
+    else if (g_profile.net_hide_enabled && !strcmp(path, "/proc/net/unix")) {
+        type = FD_TYPE_PROC_NET_UNIX;
+    }
     else if (g_profile.boot_id_spoof_enabled &&
              !strcmp(path, "/proc/sys/kernel/random/boot_id")) {
         type = FD_TYPE_PROC_BOOT_ID;
@@ -562,6 +602,7 @@ void lp_openat_hook(int dfd, const char __user *filename, int flags, long ret_fd
         if (type == FD_TYPE_PROC_MOUNTS) mounts_fd_track((int)fd, pid);
         if (type == FD_TYPE_GSERVICES_DB) gsv_fd_track((int)fd, pid);
         if (type == FD_TYPE_PROC_NET_TCP) nettcp_fd_track((int)fd, pid);
+        if (type == FD_TYPE_PROC_NET_UNIX) netunix_fd_track((int)fd, pid);
         lp_dbg("lukeprivacy: tracking fd=%d pid=%d type=%d path=%s\n", (int)fd, pid, type, path);
     }
 }
@@ -586,6 +627,7 @@ void lp_close_hook(int fd)
     mounts_fd_clear(fd, pid);
     gsv_fd_clear(fd, pid);
     nettcp_fd_clear(fd, pid);
+    netunix_fd_clear(fd, pid);
     /* Also clear keva bitmap — avoids stale bit aliasing on fd reuse. */
     lp_fd_unmark_keva(fd);
 }
@@ -599,6 +641,7 @@ int openat_hook_init(void)
     memset(mounts_fds, 0, sizeof(mounts_fds));
     memset(gsv_fds, 0, sizeof(gsv_fds));
     memset(nettcp_fds, 0, sizeof(nettcp_fds));
+    memset(netunix_fds, 0, sizeof(netunix_fds));
     pr_info("lukeprivacy: openat/close choke-points ready (fd tracking)\n");
     return 0;
 }
