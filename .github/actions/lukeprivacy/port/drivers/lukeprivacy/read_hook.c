@@ -138,7 +138,7 @@ static const char FAKE_PROC_INET6[] =
  *
  * Files in sysfs always include a trailing newline when read; matching that
  * keeps `cat` output byte-identical to stock. */
-static const char FAKE_SOC0_MACHINE[]   = "Oriole\n";
+static const char FAKE_SOC0_MACHINE[]   = "GS101 BLUEJAY MP 1.0 based on GS101\n"; /* 2026-10-28: real bluejay (was "Oriole", a cross-model tell); coherent no-op if it fires */
 static const char FAKE_SOC0_FAMILY[]    = "Diablo\n";
 static const char FAKE_SOC0_SOCID[]     = "GS101\n";
 static const char FAKE_SOC0_REVISION[]  = "17\n";
@@ -305,6 +305,18 @@ static void refresh_fake_serials(void)
         char h[32];
         int j = 0, k = 0;
         derive_hex_from_seed(lp_splitmix64(seed ^ 0x424f4f5449443030ULL /* "BOOTID00" */), h, 32);
+        /* RFC-4122 v4: the kernel's own generate_random_uuid() ALWAYS sets version nibble 4 and variant
+         * 8/9/a/b, so a genuine /proc/sys/kernel/random/boot_id is invariably v4. The raw splitmix64 hex
+         * left arbitrary nibbles there (e.g. version 'a') = a structural impossibility GMS/DroidGuard can
+         * flag. Force the two defining nibbles (h[12]=version, h[16]=variant). identity_gen._kernel_boot_id
+         * applies the IDENTICAL masking so profile boot_id == kernel boot_id byte-for-byte (no IG-vs-GMS
+         * split). (added 2026-10-28: fixes the flashed-kernel invalid-v4 boot_id; see SPOOF_SIGNAL_REGISTRY Round 3) */
+        h[12] = '4';
+        {
+            char vc = h[16];
+            int vv = (vc >= 'a') ? (vc - 'a' + 10) : (vc - '0');
+            h[16] = "0123456789abcdef"[(vv & 0x3) | 0x8];
+        }
         for (int i = 0; i < 32; i++) {
             if (i == 8 || i == 12 || i == 16 || i == 20) fake_boot_id[j++] = '-';
             fake_boot_id[j++] = h[k++];
