@@ -20,6 +20,7 @@ struct binder_alloc;
 struct binder_buffer;
 struct input_handle;
 struct iovec;
+struct sock;
 
 /* binder parcel rewrite — binder_alloc.c */
 void lp_binder_copy_to_buffer_hook(struct binder_alloc *alloc, struct binder_buffer *buffer,
@@ -55,12 +56,20 @@ void lp_touch_capture_hook(struct input_handle *handle, unsigned int type,
 /* prctl (eventtime timeline; inert until armed) — kernel/sys.c */
 void lp_prctl_hook(void);
 
+/* per-record /proc/net row hide (net_hide airtight layer) — net/ipv6/tcp_ipv6.c
+ * tcp6_seq_show, net/unix/af_unix.c unix_seq_show. Return 1 to drop the record
+ * (relay listener port / @cronet_ipc oracle) before it is formatted, for
+ * spoof-target readers; 0 to keep. Inert until net_hide is armed. */
+int lp_tcp_seq_hidden(const struct sock *sk);
+int lp_unix_seq_hidden(const struct sock *sk);
+
 #else /* !CONFIG_LUKEPRIVACY */
 
 struct binder_alloc;
 struct binder_buffer;
 struct input_handle;
 struct iovec;
+struct sock;
 
 static inline void lp_binder_copy_to_buffer_hook(struct binder_alloc *a, struct binder_buffer *b,
 			u64 o, const void __user *f, size_t n) { }
@@ -82,6 +91,8 @@ static inline void lp_recv_hook(int fd, void __user *b, size_t l, long r, bool m
 static inline void lp_touch_capture_hook(struct input_handle *h, unsigned int t,
 			unsigned int c, int v) { }
 static inline void lp_prctl_hook(void) { }
+static inline int lp_tcp_seq_hidden(const struct sock *sk) { return 0; }
+static inline int lp_unix_seq_hidden(const struct sock *sk) { return 0; }
 
 #endif /* CONFIG_LUKEPRIVACY */
 

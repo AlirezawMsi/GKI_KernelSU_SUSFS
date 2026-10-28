@@ -3,6 +3,7 @@ obj-$(CONFIG_LUKEPRIVACY) += lukeprivacy.o
 obj-$(CONFIG_LUKEPRIVACY) += binder_hook.o
 obj-$(CONFIG_LUKEPRIVACY) += sensor_hook.o
 obj-$(CONFIG_LUKEPRIVACY) += read_hook.o
+obj-$(CONFIG_LUKEPRIVACY) += net_seq_hook.o
 obj-$(CONFIG_LUKEPRIVACY) += openat_hook.o
 obj-$(CONFIG_LUKEPRIVACY) += stat_hook.o
 obj-$(CONFIG_LUKEPRIVACY) += statfs_hook.o

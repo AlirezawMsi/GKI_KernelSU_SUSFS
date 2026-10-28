@@ -1,0 +1,11 @@
+--- a/net/unix/af_unix.c
++++ b/net/unix/af_unix.c
+@@ -3433,6 +3433,8 @@
+ 	else {
+ 		struct sock *s = v;
+ 		struct unix_sock *u = unix_sk(s);
++		if (lp_unix_seq_hidden(s))
++			return 0;
+ 		unix_state_lock(s);
+ 
+ 		seq_printf(seq, "%pK: %08X %08X %08X %04X %02X %5lu",
