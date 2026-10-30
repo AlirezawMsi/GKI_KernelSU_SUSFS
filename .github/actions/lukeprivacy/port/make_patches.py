@@ -147,13 +147,13 @@ def port(f, fn):
 def e_read_write(L):
     add_include(L)
     op_span(L, "fs/read_write.c", "ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)",
-            "fdput_pos(f);", ["\tif (ret > 0)", "\t\tret = lp_read_hook(f.file, buf, ret, count);"], "before")
+            "fdput_pos(f);", ["\t\tif (ret > 0)", "\t\t\tret = lp_read_hook(f.file, buf, ret, count);"], "before")
     op_span(L, "fs/read_write.c", "ssize_t ksys_pread64(unsigned int fd, char __user *buf, size_t count,",
-            "fdput(f);", ["\tif (ret > 0)", "\t\tret = lp_read_hook(f.file, buf, ret, count);"], "before")
+            "fdput(f);", ["\t\tif (ret > 0)", "\t\t\tret = lp_read_hook(f.file, buf, ret, count);"], "before")
     op_span(L, "fs/read_write.c", "static ssize_t do_readv(unsigned long fd, const struct iovec __user *vec,",
-            "fdput_pos(f);", ["\tif (ret > 0)", "\t\tret = lp_readv_hook(f.file, vec, vlen, ret);"], "before")
+            "fdput_pos(f);", ["\t\tif (ret > 0)", "\t\t\tret = lp_readv_hook(f.file, vec, vlen, ret);"], "before")
     op_span(L, "fs/read_write.c", "static ssize_t do_preadv(unsigned long fd, const struct iovec __user *vec,",
-            "fdput(f);", ["\tif (ret > 0)", "\t\tret = lp_readv_hook(f.file, vec, vlen, ret);"], "before")
+            "fdput(f);", ["\t\tif (ret > 0)", "\t\t\tret = lp_readv_hook(f.file, vec, vlen, ret);"], "before")
 
 def e_open(L):
     add_include(L)

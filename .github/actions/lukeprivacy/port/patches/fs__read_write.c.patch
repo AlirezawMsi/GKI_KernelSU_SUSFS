@@ -4,8 +4,8 @@
  		ret = vfs_read(f.file, buf, count, ppos);
  		if (ret >= 0 && ppos)
  			f.file->f_pos = pos;
-+	if (ret > 0)
-+		ret = lp_read_hook(f.file, buf, ret, count);
++		if (ret > 0)
++			ret = lp_read_hook(f.file, buf, ret, count);
  		fdput_pos(f);
  	}
  	return ret;
@@ -13,8 +13,8 @@
  		ret = -ESPIPE;
  		if (f.file->f_mode & FMODE_PREAD)
  			ret = vfs_read(f.file, buf, count, &pos);
-+	if (ret > 0)
-+		ret = lp_read_hook(f.file, buf, ret, count);
++		if (ret > 0)
++			ret = lp_read_hook(f.file, buf, ret, count);
  		fdput(f);
  	}
  
@@ -22,8 +22,8 @@
  		ret = vfs_readv(f.file, vec, vlen, ppos, flags);
  		if (ret >= 0 && ppos)
  			f.file->f_pos = pos;
-+	if (ret > 0)
-+		ret = lp_readv_hook(f.file, vec, vlen, ret);
++		if (ret > 0)
++			ret = lp_readv_hook(f.file, vec, vlen, ret);
  		fdput_pos(f);
  	}
  
@@ -31,8 +31,8 @@
  		ret = -ESPIPE;
  		if (f.file->f_mode & FMODE_PREAD)
  			ret = vfs_readv(f.file, vec, vlen, &pos, flags);
-+	if (ret > 0)
-+		ret = lp_readv_hook(f.file, vec, vlen, ret);
++		if (ret > 0)
++			ret = lp_readv_hook(f.file, vec, vlen, ret);
  		fdput(f);
  	}
  
