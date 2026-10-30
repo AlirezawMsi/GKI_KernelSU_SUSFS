@@ -27,12 +27,14 @@
 #include <linux/user_namespace.h>
 #include <linux/sched.h>
 #include <linux/rcupdate.h>
-#include <linux/ptrace.h>            /* current_pt_regs() — recover the read() count */
+#include <linux/ptrace.h>            /* current_pt_regs() â€” recover the read() count */
 #include <linux/sched/task_stack.h> /* task_pt_regs() backing current_pt_regs() */
 
 #include "profile.h"
 #include "uaccess.h"
 #include "lp_log.h"
+
+enum fd_type lp_file_type(struct file *file);
 
 /* Direct kernel symbols (built-in => no kallsyms_lookup_name). Both are
  * non-static kernel symbols; the extern prototypes below double as a
@@ -48,12 +50,12 @@ static inline int lp_cur_uid(void)
     return (int)from_kuid(&init_user_ns, current_uid());
 }
 
-/* MUST stay byte-for-byte in sync with the matching enum in openat_hook.c —
- * fd→type mapping is written by openat_hook and read by read_hook through the
+/* MUST stay byte-for-byte in sync with the matching enum in openat_hook.c â€”
+ * fdâ†’type mapping is written by openat_hook and read by read_hook through the
  * shared tracked_fds[] table. A mismatch in integer values silently shifts
  * every type by one, so SOC0_MACHINE reads get FAMILY fake, FAMILY reads get
  * SOCID fake, etc. (and the same happens to proc_version / cpuinfo / battery
- * /display / UFS — anything past the divergence point). KEVA isn't dispatched
+ * /display / UFS â€” anything past the divergence point). KEVA isn't dispatched
  * here (keva_hook handles writes via its own bitmask), but the slot has to
  * exist so subsequent enum values match openat_hook's. */
 enum fd_type {
@@ -61,7 +63,7 @@ enum fd_type {
     FD_TYPE_WIFI_MAC,
     FD_TYPE_BT_MAC,
     FD_TYPE_SHAREDPREFS,
-    FD_TYPE_KEVA,            /* slot mirror — handled by keva_hook, no-op here */
+    FD_TYPE_KEVA,            /* slot mirror â€” handled by keva_hook, no-op here */
     FD_TYPE_PROC_VERSION,
     FD_TYPE_PROC_CPUINFO,
     FD_TYPE_PROC_INET6,
@@ -75,8 +77,8 @@ enum fd_type {
     FD_TYPE_SOC0_REVISION,
     FD_TYPE_SOC0_SERIAL,
     FD_TYPE_PROC_MOUNTS,
-    /* /proc/net/tcp{,6} — drop instacore relay listener rows (local port 8899/8391) for
-     * spoof-target uids. MUST mirror openat_hook.c's enum (shared fd→type integer mapping). */
+    /* /proc/net/tcp{,6} â€” drop instacore relay listener rows (local port 8899/8391) for
+     * spoof-target uids. MUST mirror openat_hook.c's enum (shared fdâ†’type integer mapping). */
     FD_TYPE_PROC_NET_TCP,
     /* GMS in-process read of gservices.db -> rewrite the checkin android_id
      * value. MUST be the last entry, matching openat_hook.c's enum. */
@@ -84,7 +86,7 @@ enum fd_type {
     /* files/checkin_id_token = "<android_id>:<security_token>"; rewrite the
      * android_id (digits before ':'). MUST match openat_hook.c's enum order. */
     FD_TYPE_CHECKIN_TOKEN,
-    /* /proc/net/unix — drop the oracle @cronet_ipc abstract-listener row for
+    /* /proc/net/unix â€” drop the oracle @cronet_ipc abstract-listener row for
      * spoof-target uids. Appended last; MUST match openat_hook.c's enum order. */
     FD_TYPE_PROC_NET_UNIX,
 };
@@ -92,16 +94,16 @@ enum fd_type {
 /* Fake content for /proc/version. SUSFS-style: drop "Wild" kernel suffix +
  * "build-user@build-host" + epoch-0 timestamp; emit stock-looking Pixel 6
  * kernel-builder@kbuild-pixel-6 with current susfs spoofed build date.
- * Length kept ≤ realistic /proc/version output (~280 bytes); apps reading
- * with buffer ≥ FAKE_VERSION_LEN get exactly this, shorter readers truncate
+ * Length kept â‰¤ realistic /proc/version output (~280 bytes); apps reading
+ * with buffer â‰¥ FAKE_VERSION_LEN get exactly this, shorter readers truncate
  * cleanly (no "real bytes after our fake" leak because we always overwrite
  * up to ret bytes capped at FAKE_VERSION_LEN). */
 /* MUST match the uname spoof EXACTLY (release + git-hash + build date), or an app
  * comparing uname -r vs /proc/version detects the mismatch (2026-09-20: was stale at
- * 6.1.99-gc8ed7156d/Mar-2025 while uname spoofs 6.1.145-...-ab14219743/Oct-6-2025 —
+ * 6.1.99-gc8ed7156d/Mar-2025 while uname spoofs 6.1.145-...-ab14219743/Oct-6-2025 â€”
  * a detectable tamper tell; manual registers suspended on it). See memory
  * kernel-version-spoof-mismatch. Keep this string in lockstep with whatever sets the
- * spoofed uname (SUSFS/uname spoof) — release, git hash, and the "#1 SMP PREEMPT <date>". */
+ * spoofed uname (SUSFS/uname spoof) â€” release, git hash, and the "#1 SMP PREEMPT <date>". */
 static const char FAKE_PROC_VERSION[] =
     "Linux version 6.1.145-android14-11-gc1de4747ac59-ab14219743 "
     "(build-user@build-host) "
@@ -112,8 +114,8 @@ static const char FAKE_PROC_VERSION[] =
     "#1 SMP PREEMPT Mon Oct  6 16:50:48 UTC 2025\n";
 #define FAKE_PROC_VERSION_LEN (sizeof(FAKE_PROC_VERSION) - 1)
 
-/* Fake /proc/cpuinfo for Pixel 6 (Tensor G1: 4× Cortex-A55 + 2× Cortex-A76 +
- * 2× Cortex-X1). Drop Hardware/Serial/Revision lines (potential fingerprint).
+/* Fake /proc/cpuinfo for Pixel 6 (Tensor G1: 4Ã— Cortex-A55 + 2Ã— Cortex-A76 +
+ * 2Ã— Cortex-X1). Drop Hardware/Serial/Revision lines (potential fingerprint).
  * Per-core blocks ordered for stable hash regardless of which core processed
  * a fingerprint sample. */
 static const char FAKE_PROC_CPUINFO[] =
@@ -133,10 +135,10 @@ static const char FAKE_PROC_INET6[] =
     "00000000000000000000000000000001 01 80 10 80       lo\n";
 #define FAKE_PROC_INET6_LEN (sizeof(FAKE_PROC_INET6) - 1)
 
-/* Fake /sys/devices/soc0/ — Pixel 6 (Tensor G1 / Oriole) values WITHOUT
+/* Fake /sys/devices/soc0/ â€” Pixel 6 (Tensor G1 / Oriole) values WITHOUT
  * the engineering "DVT" / "EVT" / "PVT" suffix that user-owned units often
- * leak (this Pixel reports `machine = "Oriole DVT"` — Design Verification
- * Test stage — which any fingerprint pipeline flags as non-retail). The
+ * leak (this Pixel reports `machine = "Oriole DVT"` â€” Design Verification
+ * Test stage â€” which any fingerprint pipeline flags as non-retail). The
  * other three (family / soc_id / revision) are the same across every
  * production Pixel 6 with the GS101 SoC, so faking them is identity-neutral
  * but consistent with the spoofed `machine`. `serial_number` isn't exposed
@@ -162,9 +164,9 @@ static int  fake_soc0_serial_len = 0;
  * a fraud SDK correlating across identifier surfaces sees a single
  * synthesized identity rather than mismatched real-and-fake bytes.
  *
- * Stable across reads (no per-UID variance — battery/display serials are
+ * Stable across reads (no per-UID variance â€” battery/display serials are
  * single hardware-tied facts, not per-app). Stable across reboots as long
- * as the seed is unchanged. Rotate the seed (via Randomize → fresh
+ * as the seed is unchanged. Rotate the seed (via Randomize â†’ fresh
  * ids.android_id) to get a fresh hardware identity for these too.
  *
  * Format-preserving: battery serial = 24 hex chars (Maxim MAX1720x style),
@@ -177,12 +179,12 @@ static int fake_display_serial_len = 0;
 static char fake_ufs_serial[24];
 static int fake_ufs_serial_len = 0;
 /* boot_id = per-boot UUID (36 chars: 8-4-4-4-12) + trailing '\n'. Derived from
- * android_id_seed (per-seed, NOT per-UID — real boot_id is identical across all
+ * android_id_seed (per-seed, NOT per-UID â€” real boot_id is identical across all
  * apps, so a per-app value would be a tell). Rotates when the seed changes. */
 static char fake_boot_id[40];
 static int fake_boot_id_len = 0;
 
-/* Diagnostic counters — exposed in ctl0 ioctl_stats. */
+/* Diagnostic counters â€” exposed in ctl0 ioctl_stats. */
 unsigned int g_proc_version_spoofed = 0;
 unsigned int g_proc_cpuinfo_spoofed = 0;
 unsigned int g_proc_inet6_spoofed = 0;
@@ -208,7 +210,7 @@ unsigned int g_net_tcp_filtered = 0;
 /* /proc/net/unix oracle-row filter: count of @cronet_ipc rows dropped. */
 unsigned int g_net_unix_filtered = 0;
 
-/* splitmix64 — same primitive used in binder_hook.c for per-UID
+/* splitmix64 â€” same primitive used in binder_hook.c for per-UID
  * derivation. Keeping the implementation local here avoids a cross-TU
  * symbol export; the few bytes of duplication are the cleanest option. */
 static unsigned long long lp_splitmix64(unsigned long long x)
@@ -260,7 +262,7 @@ static void derive_decimal_from_seed(unsigned long long base, char *out, int n)
 }
 
 /* Build fake_*_serial once per profile change. Called from lp_read_hook
- * lazily when seed transitions from empty→non-empty OR changes; we
+ * lazily when seed transitions from emptyâ†’non-empty OR changes; we
  * detect "stale" by remembering the first byte of the seed we last
  * derived from. */
 static char last_seen_seed_byte = 0;
@@ -280,7 +282,7 @@ static void refresh_fake_serials(void)
     unsigned long long seed = parse_seed_u64(g_profile.android_id_seed);
 
     /* Battery serial: 24 hex (Maxim MAX1720x format is mixed alnum but
-     * 24 hex is a plausible vendor encoding — apps don't validate
+     * 24 hex is a plausible vendor encoding â€” apps don't validate
      * format beyond non-empty length). */
     derive_hex_from_seed(lp_splitmix64(seed ^ 0x4254525953524c30ULL /* "BTRYSRL0" */),
                          fake_battery_serial, 24);
@@ -295,7 +297,7 @@ static void refresh_fake_serials(void)
     fake_display_serial_len = 15;
 
     /* UFS serial: 16 hex (eMMC/UFS string descriptor format). Pixel 6
-     * currently exposes empty — keeping it derived gives consistency
+     * currently exposes empty â€” keeping it derived gives consistency
      * regardless of how the kernel exposes this in future firmware. */
     derive_hex_from_seed(lp_splitmix64(seed ^ 0x5546535345524c30ULL /* "UFSSERL0" */),
                          fake_ufs_serial, 16);
@@ -339,7 +341,7 @@ static void refresh_fake_serials(void)
     last_seen_seed_byte = g_profile.android_id_seed[0];
 }
 
-/* Shared fd→type table lives in openat_hook.c (it owns the openat/close
+/* Shared fdâ†’type table lives in openat_hook.c (it owns the openat/close
  * choke-points that populate it). We consume it here via these externs.
  * COUPLING: the enum fd_type above MUST match openat_hook.c's copy, and the
  * (fd,pid) key must use the same pid dimension (current->tgid) in both. */
@@ -462,7 +464,7 @@ static bool is_mac_format(const char *buf, size_t len)
 /* Detect whether the calling PROCESS is still a bare zygote fork that hasn't
  * finished specialization. Android sets argv0 (and comm) to the placeholder
  * "<pre-initialized>" between fork and bindApplication; the ART runtime reads
- * /proc/sys/kernel/random/boot_id exactly once during this window — and,
+ * /proc/sys/kernel/random/boot_id exactly once during this window â€” and,
  * empirically, from a *binder* worker thread (comm "binder:<pid>_N"), NOT the
  * main thread. So we can't look at the current thread's comm; we must read the
  * process-wide leader comm. find_task_by_vpid(tgid) yields the thread-group
@@ -474,7 +476,7 @@ static bool is_mac_format(const char *buf, size_t len)
  * name, so it still gets the spoof.
  *
  * Direct kernel calls (built-in): find_task_by_vpid + __get_task_comm under
- * rcu_read_lock. Fail-safe: any lookup miss returns true (treat as pre-init →
+ * rcu_read_lock. Fail-safe: any lookup miss returns true (treat as pre-init â†’
  * skip spoof) so it can never re-break startup. */
 static bool lp_task_is_preinit(void)
 {
@@ -492,7 +494,7 @@ static bool lp_task_is_preinit(void)
     cmn[sizeof(cmn) - 1] = '\0';
     /* comm is a TASK_COMM_LEN(16) truncation of Android's "<pre-initialized>"
      * argv0. On this kernel it truncates from the TAIL, giving
-     * "re-initialized>" rather than a "<pre-…" head — so match the stable
+     * "re-initialized>" rather than a "<pre-â€¦" head â€” so match the stable
      * interior substring "initial", which survives either truncation and never
      * appears in a real package name or thread name. */
     {
@@ -505,13 +507,13 @@ static bool lp_task_is_preinit(void)
 /* instacore relay listener ports to hide from /proc/net/tcp{,6} for spoof-target uids:
  * 8899 (0x22C3, CONNECT relay) + 8391 (0x20C7, transparent SNI relay). A clean IG opens
  * NO localhost listeners, so these rows in IG's own (shared) netns are the terminal
- * "instrumented process" tell — and because the socket lives in the shared netns, moving
+ * "instrumented process" tell â€” and because the socket lives in the shared netns, moving
  * its owner to the root companion does not hide the row; only a kernel row-filter does.
  * Keep in lockstep with ProxyRelay.java PORT(8899)/TPORT(8391). */
 static const u16 LP_NETHIDE_PORTS[] = { 0x22C3, 0x20C7 };
 #define LP_NETHIDE_NPORTS ((int)(sizeof(LP_NETHIDE_PORTS) / sizeof(LP_NETHIDE_PORTS[0])))
 
-/* Parse exactly 4 hex chars at [p, end) → value, or -1 on any non-hex / short buffer
+/* Parse exactly 4 hex chars at [p, end) â†’ value, or -1 on any non-hex / short buffer
  * (fail-safe: the caller keeps the line when the port can't be positively parsed). */
 static int lp_hex4(const char *p, const char *end)
 {
@@ -532,7 +534,7 @@ static int lp_hex4(const char *p, const char *end)
 /* True iff a /proc/net/tcp{,6} row's LOCAL port is an instacore relay port to hide.
  * Kernel row format (tcp4/6_seq_show): "<sp><sl>: <LADDR>:<LPORT> <RADDR>:<RPORT> <ST>...".
  * LADDR is 8 hex (v4) or 32 hex (v6); LPORT is the 4 hex after the SECOND ':' (the first
- * ':' ends the sl field). Any parse miss → false (KEEP the row): never drop a line we
+ * ':' ends the sl field). Any parse miss â†’ false (KEEP the row): never drop a line we
  * cannot positively identify, so the header and all non-relay rows always survive. */
 static bool lp_nettcp_line_hidden(const char *line, size_t ll)
 {
@@ -575,16 +577,16 @@ static bool lp_netunix_line_hidden(const char *line, size_t ll)
 }
 
 /*
- * lp_read_hook — VFS read() choke-point.
+ * lp_read_hook â€” VFS read() choke-point.
  *
  * Called from fs/read_write.c ksys_read()/ksys_pread64() after a successful
  * vfs_read() (ret > 0). Returns the (possibly shrunk) byte count that the
- * syscall should report to userspace — the mount-filter path drops whole
+ * syscall should report to userspace â€” the mount-filter path drops whole
  * lines and MUST propagate the reduced length, so this returns `ret` rather
  * than being void (see call-site note). pread64 shares this path: it passes
  * (fd, buf, ret); the file offset is irrelevant to substring filtering.
  */
-long lp_read_hook(int fd, char __user *buf, long ret)
+long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count)
 {
     if (!g_hooks_enabled) return ret;
     if (ret <= 0) return ret;
@@ -593,46 +595,15 @@ long lp_read_hook(int fd, char __user *buf, long ret)
     if (!is_valid_user_ptr(ubuf)) return ret;
 
     int uid = lp_cur_uid();
-    /* lp_is_uid_excluded also rejects UID 0 unconditionally (root daemons
-     * never get spoofed). The check covers both that and the configured
-     * exclusion list. */
-    if (lp_is_uid_excluded((__u32)uid)) return ret;
-    int pid = current->tgid;
-    enum fd_type type = get_fd_type(fd, pid);
-
-    /* Recover boot_id reads whose fd was evicted from the shared tracking
-     * table before the read (Java InputStreamReader path). The dedicated
-     * boot_id table never evicts, so a NONE here that is_bootid_fd catches
-     * is a real boot_id read. */
-    if (type == FD_TYPE_NONE && g_profile.boot_id_spoof_enabled && is_bootid_fd(fd, pid))
-        type = FD_TYPE_PROC_BOOT_ID;
-
-    /* Same recovery for the /proc mounts fd: a delayed big read() (Ferrite/dd
-     * open -> table churns -> one read) loses its shared-table slot, so a NONE
-     * that the eviction-proof mounts table catches is a real mounts read that
-     * must still be filtered for the /data_mirror + APatch root tells. */
-    if (type == FD_TYPE_NONE && is_mounts_fd(fd, pid))
-        type = FD_TYPE_PROC_MOUNTS;
-
-    /* gservices.db opened early, android_id queried much later (attestation):
-     * the shared table churns in between, so recover from the dedicated table. */
-    if (type == FD_TYPE_NONE && g_profile.android_id_spoof_enabled && is_gsv_fd(fd, pid))
-        type = FD_TYPE_GSERVICES_DB;
-
-    /* /proc/net/tcp{,6}: recover a churn-evicted tag from the dedicated table. */
-    if (type == FD_TYPE_NONE && g_profile.net_hide_enabled && is_nettcp_fd(fd, pid))
-        type = FD_TYPE_PROC_NET_TCP;
-    /* /proc/net/unix: recover a churn-evicted tag from the dedicated table. */
-    if (type == FD_TYPE_NONE && g_profile.net_hide_enabled && is_netunix_fd(fd, pid))
-        type = FD_TYPE_PROC_NET_UNIX;
-
+    if (uid < 10000 || lp_is_uid_excluded((__u32)uid)) return ret;
+    enum fd_type type = lp_file_type(file);
     if (type == FD_TYPE_NONE) return ret;
 
     /* Size-cap for fixed-size stack-buffer paths. Mount-filter path below
      * handles its own cap. Without this gate a read of e.g. 64 KB from
      * sharedprefs would overflow `char buf[4096]` and panic. */
-    /* K-2 (spoof audit 2026-10-26): `>=` not `>` — a read of exactly MAX_BUF_SIZE also needs
-     * room for cbuf[copied]=' ' (one-byte stack OOB otherwise). */
+    /* K-2 (spoof audit 2026-10-26): `>=` not `>` â€” a read of exactly MAX_BUF_SIZE also needs
+     * room for cbuf[copied]='\0' (one-byte stack OOB otherwise). */
     if (type != FD_TYPE_PROC_MOUNTS && type != FD_TYPE_GSERVICES_DB &&
         type != FD_TYPE_PROC_NET_TCP && type != FD_TYPE_PROC_NET_UNIX &&
         ret >= MAX_BUF_SIZE) return ret;
@@ -664,19 +635,13 @@ long lp_read_hook(int fd, char __user *buf, long ret)
      * content here, capped at `ret` (whatever the original syscall actually
      * filled), so apps that don't read the full file still get a clean
      * truncation. Source content is compile-time-const, no kalloc, no
-     * sleep — safe in choke-point context. */
+     * sleep â€” safe in choke-point context. */
     if (type == FD_TYPE_PROC_VERSION) {
         /* Deliver the FULL fake banner. The release + "#1 SMP PREEMPT <date>"
-         * MUST match the spoofed uname byte-for-byte (uname -a exposes both) —
-         * capping at the real file length `ret` truncated the date mid-string
-         * (e.g. "...Mon Oc"), which is itself a uname-vs-/proc/version tell
-         * (2026-09-20). Cap instead at the CALLER's buffer size = read()/
-         * pread64() arg #3, preserved in the saved user regs (x2 on arm64),
-         * so the whole fake is delivered whenever the buffer can hold it (the
-         * universal case: /proc reads use a page-sized buffer) while we never
-         * return more bytes than the caller requested (a read() returning
-         * > count is impossible and would itself be a tell / overflow). */
-        size_t count = (size_t)current_pt_regs()->regs[2];
+         * MUST match the spoofed uname byte-for-byte (uname -a exposes both) â€”
+         * capping at the real file length `ret` truncated the date mid-string.
+         * The explicit count also works for every iovec segment (where regs[2]
+         * would incorrectly contain the vector length instead of a byte count). */
         size_t n = FAKE_PROC_VERSION_LEN;
         if (n > count) n = count;
         if (n > 0) lp_copy_to_user(ubuf, FAKE_PROC_VERSION, n);
@@ -734,9 +699,9 @@ long lp_read_hook(int fd, char __user *buf, long ret)
     }
     /* Per-component sysfs serials. refresh_fake_serials() is a no-op
      * when the seed hasn't changed since last call. If the seed is empty
-     * we fall through to no-op — apps see the real kernel-side serial.
+     * we fall through to no-op â€” apps see the real kernel-side serial.
      * Zero-init a local buffer, memcpy our fake into the head, copy the
-     * full ret bytes back — any tail past our fake is guaranteed NUL, so
+     * full ret bytes back â€” any tail past our fake is guaranteed NUL, so
      * the kernel buffer's real-serial-suffix can't leak. */
     if (type == FD_TYPE_BATTERY_SERIAL) {
         refresh_fake_serials();
@@ -781,7 +746,7 @@ long lp_read_hook(int fd, char __user *buf, long ret)
         return ret;
     }
     /* GMS reads its OWN GServices checkin android_id directly from gservices.db
-     * (it owns the file), BELOW the binder cursor/settings hooks — which is why
+     * (it owns the file), BELOW the binder cursor/settings hooks â€” which is why
      * neither cursor_aid nor ssaid ever covered the id DroidGuard mints the PI/
      * reCAPTCHA token with (measured 2026-10-13: cursor_aid=0 across real
      * attestation mints while ssaid_repl fired). Rewrite the android_id value
@@ -883,13 +848,13 @@ long lp_read_hook(int fd, char __user *buf, long ret)
             "overlay KSU",    /* fs-type/source string emitted by KSU overlay mount */
             "/data/adb/ksu",
             "/data/adb/modules",
-            "/data_mirror",   /* KernelSU AND APatch global data-mirror binds — stock
+            "/data_mirror",   /* KernelSU AND APatch global data-mirror binds â€” stock
                                * Android has NO /data_mirror; its presence is a root tell */
             "APatch",         /* APatch magic-mount source marker; stock never emits it */
         };
         const int NEEDLE_COUNT = sizeof(NEEDLES) / sizeof(NEEDLES[0]);
 
-        /* Filter using ONLY a 4 KB stack scratch — no kmalloc, no static BSS.
+        /* Filter using ONLY a 4 KB stack scratch â€” no kmalloc, no static BSS.
          * Read ubuf in <=4 KB windows aligned to the last '\n' so no mount line
          * is ever split across a window, filter each window's complete lines,
          * and compact survivors back into ubuf. write_off <= read_off always. */
@@ -985,12 +950,12 @@ long lp_read_hook(int fd, char __user *buf, long ret)
      * lp_nettcp_line_hidden keeps it. Gated to non-excluded uids by the function-level
      * lp_is_uid_excluded() check above (IG + force-spoofed GMS).
      *
-     * The WHOLE read `ret` is processed — NO fixed byte cap (the 4 KB stackbuf already bounds
+     * The WHOLE read `ret` is processed â€” NO fixed byte cap (the 4 KB stackbuf already bounds
      * memory regardless of `total`), so a large /proc/net/tcp is never silently truncated
      * (security review 2026-10-27, finding 2). Any partial trailing row (a seq_file record
      * split at the read boundary) is passed through UNCHANGED, never filtered.
      *
-     * SCOPE (security review findings 1 & 3): procfs only — this does NOT cover
+     * SCOPE (security review findings 1 & 3): procfs only â€” this does NOT cover
      * NETLINK_SOCK_DIAG (ss/inet_diag); full coverage needs a sock_diag netlink filter or the
      * listeners moved out of IG's netns, so it is PARTIAL by design. The 8642 oracle is an
      * ABSTRACT UNIX socket (@cronet_ipc): NOT a TCP row (absent from LP_NETHIDE_PORTS), it is
@@ -1051,7 +1016,7 @@ long lp_read_hook(int fd, char __user *buf, long ret)
              * otherwise pass it through UNCHANGED so a non-hidden row is never truncated.
              * RESIDUAL: a split that falls BEFORE the local-port field leaves the port
              * unknowable here, and the row's remainder surfaces on the NEXT read() as a
-             * headless fragment — stateless per-read filtering cannot close that seam. The
+             * headless fragment â€” stateless per-read filtering cannot close that seam. The
              * airtight fix is a per-record tcp4/6_seq_show hook (filters before formatting, no
              * read-boundary), deferred to the on-device build/test loop. Non-final windows
              * leave the partial for the next window (read_off advances only by proc_len). */
@@ -1103,7 +1068,7 @@ long lp_read_hook(int fd, char __user *buf, long ret)
         /* Gate on profile value non-empty BEFORE calling spoof_xml_value.
          * Empty profile means the corresponding hook is toggled OFF (companion
          * pushes "" to clear g_profile.*). spoof_xml_value(value="") would
-         * zero-replace + space-pad the existing value slot — pure corruption. */
+         * zero-replace + space-pad the existing value slot â€” pure corruption. */
         if (g_profile.advertising_id[0] &&
             (str_contains(cbuf, ret, "adid") || str_contains(cbuf, ret, "advertising"))) {
             if (spoof_xml_value(cbuf, ret, "adid", g_profile.advertising_id)) {
@@ -1125,33 +1090,67 @@ long lp_read_hook(int fd, char __user *buf, long ret)
     return ret;
 }
 
-/* readv/preadv choke-point (fs/read_write.c do_readv/do_preadv). The data lands
- * in the caller's iovec, not a single buf, so the ksys_read/ksys_pread64 path's
- * lp_read_hook never sees it. GMS reads files/checkin_id_token via readv (measured
- * 2026-10-14), so cover that path: pull the first iovec segment and run it through
- * the same fd-typed rewrite. The device-id files (checkin_id_token ~39 B, gservices
- * rows) fit a single segment, so the first iovec holds the android_id. */
-void lp_readv_hook(int fd, const struct iovec __user *vec, unsigned long vlen, long ret)
+static void __user *lp_iov_position(const struct iovec __user *vec,
+                                    unsigned long vlen, long pos)
 {
-    struct iovec iov0;
-    long n;
-    if (!g_hooks_enabled || ret <= 0 || vlen < 1 || !vec)
-        return;
-    if (lp_copy_from_user(&iov0, (const void __user *)vec, sizeof(iov0)) != (long)sizeof(iov0))
-        return;
-    if (!iov0.iov_base)
-        return;
-    n = (ret < (long)iov0.iov_len) ? ret : (long)iov0.iov_len;
-    if (n > 0)
-        lp_read_hook(fd, (char __user *)iov0.iov_base, n);
+    for (unsigned long i = 0; i < vlen; i++) {
+        struct iovec iov;
+        if (lp_copy_from_user(&iov, vec + i, sizeof(iov)) != (long)sizeof(iov))
+            return NULL;
+        if (pos < (long)iov.iov_len)
+            return (char __user *)iov.iov_base + pos;
+        pos -= (long)iov.iov_len;
+    }
+    return NULL;
 }
 
-/* ─── setup-only lifecycle (no runtime syscall hooks any more) ────────────
+long lp_readv_hook(struct file *file, const struct iovec __user *vec,
+                   unsigned long vlen, long ret)
+{
+    long remaining = ret, written = 0;
+    if (!g_hooks_enabled || ret <= 0 || !file || !vec || vlen == 0)
+        return ret;
+
+    for (unsigned long i = 0; i < vlen && remaining > 0; i++) {
+        struct iovec iov;
+        if (lp_copy_from_user(&iov, vec + i, sizeof(iov)) != (long)sizeof(iov))
+            break;
+        long n = remaining < (long)iov.iov_len ? remaining : (long)iov.iov_len;
+        if (n <= 0) continue;
+        if (!iov.iov_base) break;
+        long after = lp_read_hook(file, (char __user *)iov.iov_base, n, n);
+        if (after < 0) return after;
+        if (after > 0) {
+            void __user *dst = lp_iov_position(vec, vlen, written);
+            if (!dst) return -EFAULT;
+            if (lp_copy_to_user_raw(dst, iov.iov_base, after) != after)
+                return -EFAULT;
+            written += after;
+        }
+        remaining -= n;
+    }
+
+    /* A line filter may shorten the result. Keep the original iovec shape but
+     * compact survivors, zero the unused tail, and return the true byte count. */
+    long result = written;
+    while (written < ret) {
+        char zeros[256] = {0};
+        void __user *dst = lp_iov_position(vec, vlen, written);
+        if (!dst) return -EFAULT;
+        long chunk = ret - written > (long)sizeof(zeros) ? (long)sizeof(zeros) : ret - written;
+        if (lp_copy_to_user_raw(dst, zeros, chunk) != chunk)
+            return -EFAULT;
+        written += chunk;
+    }
+    return result;
+}
+
+/* â”€â”€â”€ setup-only lifecycle (no runtime syscall hooks any more) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  *
  * The boot_id proc_do_uuid / random_table pointer swap is REMOVED in the
  * built-in port: it was never installed in the KPM either (the workflow
  * reboots between accounts so boot_id rotates naturally), and proc_do_uuid /
- * random_table are static in drivers/char/random.c — unreachable by direct
+ * random_table are static in drivers/char/random.c â€” unreachable by direct
  * symbol from this driver TU. boot_id spoofing still functions through the
  * FD_TYPE_PROC_BOOT_ID path above. */
 int read_hook_init(void)

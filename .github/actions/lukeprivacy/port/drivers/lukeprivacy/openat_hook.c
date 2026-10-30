@@ -28,6 +28,8 @@
 #include <linux/uidgid.h>
 #include <linux/user_namespace.h>
 #include <linux/sched.h>
+#include <linux/fs.h>
+#include <linux/dcache.h>
 
 #include "profile.h"
 #include "uaccess.h"
@@ -605,6 +607,55 @@ void lp_openat_hook(int dfd, const char __user *filename, int flags, long ret_fd
         if (type == FD_TYPE_PROC_NET_UNIX) netunix_fd_track((int)fd, pid);
         lp_dbg("lukeprivacy: tracking fd=%d pid=%d type=%d path=%s\n", (int)fd, pid, type, path);
     }
+}
+
+/* Classify the actual open file at read time. This is correct across dup/fork and
+ * /proc/self/fd aliases, and never depends on descriptor-number lifetime. */
+enum fd_type lp_file_type(struct file *file)
+{
+    char buf[MAX_PATH_LEN];
+    char *path;
+    if (!file) return FD_TYPE_NONE;
+    path = d_path(&file->f_path, buf, sizeof(buf));
+    if (IS_ERR(path)) return FD_TYPE_NONE;
+
+    if ((str_contains(path, "/sys/class/net/wlan") &&
+         (str_ends_with(path, "/address") || str_ends_with(path, "/macaddress"))) ||
+        (str_contains(path, "/sys/class/net/aware_nmi") && str_ends_with(path, "/address")) ||
+        (str_contains(path, "/sys/class/net/swlan") && str_ends_with(path, "/address")) ||
+        (str_contains(path, "/sys/class/net/p2p") && str_ends_with(path, "/address")))
+        return FD_TYPE_WIFI_MAC;
+    if (str_contains(path, "/sys/class/bluetooth/") && str_ends_with(path, "/address"))
+        return FD_TYPE_BT_MAC;
+    if (str_ends_with(path, "/serial_number") &&
+        (str_contains(path, "maxfg") || str_contains(path, "power_supply/battery")))
+        return FD_TYPE_BATTERY_SERIAL;
+    if (str_ends_with(path, "/serial_number") && str_contains(path, "drmdsim"))
+        return FD_TYPE_DISPLAY_SERIAL;
+    if (str_ends_with(path, "/serial_number") && str_contains(path, ".ufs"))
+        return FD_TYPE_UFS_SERIAL;
+    if ((str_ends_with(path, "/mounts") || str_ends_with(path, "/mountinfo") ||
+         str_ends_with(path, "/mountstats")) && starts_with_proc(path))
+        return FD_TYPE_PROC_MOUNTS;
+    if (str_contains(path, "shared_prefs") && str_ends_with(path, ".xml"))
+        return FD_TYPE_SHAREDPREFS;
+    if (!strcmp(path, "/proc/version")) return FD_TYPE_PROC_VERSION;
+    if (!strcmp(path, "/proc/cpuinfo")) return FD_TYPE_PROC_CPUINFO;
+    if (g_profile.net_hide_enabled &&
+        (!strcmp(path, "/proc/net/tcp") || !strcmp(path, "/proc/net/tcp6")))
+        return FD_TYPE_PROC_NET_TCP;
+    if (g_profile.net_hide_enabled && !strcmp(path, "/proc/net/unix"))
+        return FD_TYPE_PROC_NET_UNIX;
+    if (g_profile.boot_id_spoof_enabled && !strcmp(path, "/proc/sys/kernel/random/boot_id"))
+        return FD_TYPE_PROC_BOOT_ID;
+    if (!strcmp(path, "/sys/devices/soc0/machine")) return FD_TYPE_SOC0_MACHINE;
+    if (!strcmp(path, "/sys/devices/soc0/family")) return FD_TYPE_SOC0_FAMILY;
+    if (!strcmp(path, "/sys/devices/soc0/soc_id")) return FD_TYPE_SOC0_SOCID;
+    if (!strcmp(path, "/sys/devices/soc0/revision")) return FD_TYPE_SOC0_REVISION;
+    if (!strcmp(path, "/sys/devices/soc0/serial_number")) return FD_TYPE_SOC0_SERIAL;
+    if (str_contains(path, "gservices.db")) return FD_TYPE_GSERVICES_DB;
+    if (str_contains(path, "checkin_id_token")) return FD_TYPE_CHECKIN_TOKEN;
+    return FD_TYPE_NONE;
 }
 
 /*

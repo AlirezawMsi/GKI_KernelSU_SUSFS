@@ -25,12 +25,12 @@
  	return fd;
  }
  
-@@ -1474,6 +1485,8 @@
+@@ -1472,6 +1483,8 @@
+  */
+ SYSCALL_DEFINE1(close, unsigned int, fd)
  {
- 	int retval = close_fd(fd);
- 
 +	lp_close_hook((int)fd);
 +
+ 	int retval = close_fd(fd);
+ 
  	/* can't restart close syscall because file table entry was cleared */
- 	if (unlikely(retval == -ERESTARTSYS ||
- 		     retval == -ERESTARTNOINTR ||

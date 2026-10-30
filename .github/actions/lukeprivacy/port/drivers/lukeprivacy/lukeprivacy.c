@@ -1264,7 +1264,9 @@ static ssize_t lp_proc_write(struct file *f, const char __user *ubuf,
     kbuf[len] = '\0';
     while (len && (kbuf[len - 1] == '\n' || kbuf[len - 1] == '\r'))
         kbuf[--len] = '\0';
-    lp_ctl(kbuf, resp, sizeof(resp));
+    long rc = lp_ctl(kbuf, resp, sizeof(resp));
+    if (rc < 0)
+        return rc;
     return (ssize_t)(len ? len : 1);
 }
 
@@ -1422,7 +1424,7 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
     }
 
     if (!strcmp(args, "status")) {
-        char buf[512];
+        char buf[768];
         __s64 lat_i = lp_dbl_to_scaled(&g_profile.latitude, 1000000);
         __s64 lon_i = lp_dbl_to_scaled(&g_profile.longitude, 1000000);
         snprintf(buf, sizeof(buf),
@@ -1434,10 +1436,10 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
             "carrier_name=%s real_carrier_name=%s\n"
             "location_enabled=%d lat_i=%lld lon_i=%lld\n"
             "pretend_sim_enabled=%d cell_info_enabled=%d\n"
-            "android_id_spoof=%d seed_set=%d\n"
+            "android_id_spoof=%d seed_set=%d android_id_seed=%s boot_id_spoof=%d adb_hide=%d\n"
             "sensor_accel_spoof=%d sensor_gyro_spoof=%d\n"
             "gaid_binder=%d hostbridge=%d proc_ver_uid=%d timezone_binder=%d\n"
-            "net_hide=%d\n",
+            "net_hide=%d excluded_count=%d force_count=%d\n",
             g_hooks_enabled,
             g_profile.imei,
             g_profile.serial,
@@ -1451,13 +1453,18 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
             g_profile.cell_info_enabled,
             g_profile.android_id_spoof_enabled,
             g_profile.android_id_seed[0] != 0 ? 1 : 0,
+            g_profile.android_id_seed,
+            g_profile.boot_id_spoof_enabled,
+            g_profile.adb_hide_enabled,
             g_profile.sensor_accel_spoof_enabled,
             g_profile.sensor_gyro_spoof_enabled,
             g_profile.gaid_binder_reenabled,
             g_profile.hostprocess_bridge_enabled,
             g_profile.proc_version_uid_redirect_enabled,
             g_profile.timezone_binder_enabled,
-            g_profile.net_hide_enabled);
+            g_profile.net_hide_enabled,
+            g_excluded_uids_count,
+            g_force_spoof_count);
         compat_copy_to_user(out_msg, buf, strlen(buf) + 1);
         return 0;
     }
@@ -1585,7 +1592,7 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
         char buf[64];
         snprintf(buf, sizeof(buf), "added=%d total=%d", added, g_excluded_uids_count);
         compat_copy_to_user(out_msg, buf, strlen(buf) + 1);
-        return 0;
+        return added < 0 ? added : 0;
     }
 
     if (!strcmp(args, "list_excluded_uids")) {

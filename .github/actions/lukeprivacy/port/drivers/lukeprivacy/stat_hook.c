@@ -333,7 +333,7 @@ void lp_stat_hook(int kind, const char __user *upath, void __user *ubuf, long re
     if (!g_hooks_enabled) return;
     if (ret != 0) return;
 
-    if (lp_is_uid_excluded(lp_current_uid())) return;
+    if (lp_current_uid() < 10000 || lp_is_uid_excluded(lp_current_uid())) return;
 
     switch (kind) {
     case LP_STAT_NEWFSTATAT: do_newfstatat(upath, ubuf); break;

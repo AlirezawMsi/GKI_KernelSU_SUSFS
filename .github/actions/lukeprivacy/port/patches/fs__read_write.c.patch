@@ -1,38 +1,38 @@
 --- a/fs/read_write.c
 +++ b/fs/read_write.c
-@@ -615,6 +615,8 @@
+@@ -613,6 +613,8 @@
+ 		ret = vfs_read(f.file, buf, count, ppos);
+ 		if (ret >= 0 && ppos)
  			f.file->f_pos = pos;
++	if (ret > 0)
++		ret = lp_read_hook(f.file, buf, ret, count);
  		fdput_pos(f);
  	}
-+	if (ret > 0)
-+		ret = lp_read_hook((int)fd, buf, ret);
  	return ret;
- }
- 
-@@ -666,6 +668,8 @@
+@@ -663,6 +665,8 @@
+ 		ret = -ESPIPE;
+ 		if (f.file->f_mode & FMODE_PREAD)
+ 			ret = vfs_read(f.file, buf, count, &pos);
++	if (ret > 0)
++		ret = lp_read_hook(f.file, buf, ret, count);
  		fdput(f);
  	}
  
+@@ -953,6 +957,8 @@
+ 		ret = vfs_readv(f.file, vec, vlen, ppos, flags);
+ 		if (ret >= 0 && ppos)
+ 			f.file->f_pos = pos;
 +	if (ret > 0)
-+		ret = lp_read_hook((int)fd, buf, ret);
- 	return ret;
- }
++		ret = lp_readv_hook(f.file, vec, vlen, ret);
+ 		fdput_pos(f);
+ 	}
  
-@@ -959,6 +963,8 @@
- 	if (ret > 0)
- 		add_rchar(current, ret);
- 	inc_syscr(current);
+@@ -1006,6 +1012,8 @@
+ 		ret = -ESPIPE;
+ 		if (f.file->f_mode & FMODE_PREAD)
+ 			ret = vfs_readv(f.file, vec, vlen, &pos, flags);
 +	if (ret > 0)
-+		lp_readv_hook((int)fd, vec, vlen, ret);
- 	return ret;
- }
- 
-@@ -1012,6 +1018,8 @@
- 	if (ret > 0)
- 		add_rchar(current, ret);
- 	inc_syscr(current);
-+	if (ret > 0)
-+		lp_readv_hook((int)fd, vec, vlen, ret);
- 	return ret;
- }
++		ret = lp_readv_hook(f.file, vec, vlen, ret);
+ 		fdput(f);
+ 	}
  

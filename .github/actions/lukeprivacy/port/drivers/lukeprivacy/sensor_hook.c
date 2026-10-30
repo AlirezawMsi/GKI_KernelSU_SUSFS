@@ -70,6 +70,7 @@
 #include <linux/nsproxy.h>
 #include <linux/time_namespace.h>
 #include <linux/kallsyms.h>
+#include <linux/mutex.h>
 #include <asm/current.h>
 #include <asm/neon.h>
 #include <asm/simd.h>
@@ -673,15 +674,24 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
     size_t count = (size_t)ret / evt_size;
     if (count == 0 || count > 256) return;  /* Sanity bound on batched events. */
 
-    /* Copy entire buffer into kernel scratch. Bounded above by 65 536. */
+    /* Serialize the scratch buffer AND the oscillator/PRNG state through copy-out.
+     * copy_to_user may sleep, so a mutex (not a spinlock) is required here. */
+    static DEFINE_MUTEX(lp_sensor_lock);
     static char scratch[65536];
-    if (lp_copy_from_user(scratch, ubuf, (long)ret) <= 0) return;
+    mutex_lock(&lp_sensor_lock);
+    if (lp_copy_from_user(scratch, ubuf, (long)ret) <= 0) {
+        mutex_unlock(&lp_sensor_lock);
+        return;
+    }
 
     /* Cross-check: first event's version field must match evt_size. The
      * version field is the FIRST self-describing structural anchor and
      * confirms we guessed the per-version layout correctly. */
     __s32 first_version = *(__s32 *)scratch;
-    if (first_version != (__s32)evt_size) return;
+    if (first_version != (__s32)evt_size) {
+        mutex_unlock(&lp_sensor_lock);
+        return;
+    }
 
     /* FP/NEON is used from here on (bias math, oscillators, sin/cos/sqrt).
      * On arm64 the kernel is built -mgeneral-regs-only and FP/SIMD registers
@@ -689,7 +699,10 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
      * process (syscall) context after a successful copy, so SIMD is available;
      * bail defensively if not. copy_to_user() below stays OUTSIDE the NEON
      * region (it may fault/sleep; NEON section is preempt-disabled). */
-    if (unlikely(!may_use_simd())) return;
+    if (unlikely(!may_use_simd())) {
+        mutex_unlock(&lp_sensor_lock);
+        return;
+    }
 
     /* Derive per-UID offset table once for this batch. */
     float off_ax, off_ay, off_az, off_gx, off_gy, off_gz, off_mx, off_my, off_mz;
@@ -887,6 +900,7 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
     if (modified) {
         lp_copy_to_user(ubuf, scratch, (long)ret);
     }
+    mutex_unlock(&lp_sensor_lock);
 }
 
 #ifdef LP_EVENTTIME_DIAG

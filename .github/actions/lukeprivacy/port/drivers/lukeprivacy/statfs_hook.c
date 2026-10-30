@@ -82,7 +82,7 @@ void lp_statfs_hook(void __user *buf, long ret)
     /* UID gate. Same policy as the other read-side hooks: app UID
      * (>= 10000) and not on the exclude list. Skips root, system_server,
      * Google packages, our companion APK. */
-    if (lp_is_uid_excluded(lp_current_uid())) return;
+    if (lp_current_uid() < 10000 || lp_is_uid_excluded(lp_current_uid())) return;
 
     rewrite_overlay_to_erofs(buf);
 }

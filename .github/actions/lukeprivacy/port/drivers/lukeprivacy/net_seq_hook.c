@@ -79,6 +79,8 @@ static bool lp_seq_reader_hidden(void)
 	if (!g_profile.net_hide_enabled)
 		return false;
 	uid = from_kuid(&init_user_ns, current_uid());
+	if (uid < 10000)
+		return false;
 	if (lp_is_uid_excluded(uid))
 		return false;
 	return true;

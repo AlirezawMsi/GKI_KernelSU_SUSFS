@@ -10,7 +10,7 @@ set -euo pipefail
 KROOT="${1:?usage: inject_include.sh <kernel-source-root>}"
 INC='#include <linux/lukeprivacy.h>'
 FILES="fs/read_write.c fs/open.c fs/stat.c fs/statfs.c kernel/sys.c net/socket.c \
-net/ipv6/tcp_ipv6.c net/unix/af_unix.c \
+net/ipv4/tcp_ipv4.c net/ipv6/tcp_ipv6.c net/unix/af_unix.c \
 drivers/input/input.c drivers/android/binder.c drivers/android/binder_alloc.c"
 for f in $FILES; do
   file="$KROOT/$f"

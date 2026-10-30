@@ -178,29 +178,9 @@ unsigned int g_uid_map_evicts = 0;
 unsigned int g_uid_map_lookups_hit = 0;
 unsigned int g_uid_map_lookups_miss = 0;
 
-/* Lockless hash map. KernelPatch does not export
- * __raw_spin_lock_irqsave / __raw_spin_unlock_irqrestore symbols, so
- * proper kernel spinlocks are unavailable. Race conditions are
- * acceptable here:
- *   - Concurrent writes to different entries: linear probe finds
- *     different slots most of the time; collision worst case = one
- *     entry overwritten (we don't care which uid wins for the same
- *     alloc, since the alloc is single-receiver-process-owned).
- *   - Read-during-write: AArch64 may reorder the (alloc, uid) pair
- *     stores, so reader could observe alloc=X with stale uid=0
- *     briefly. Reader returns 0 → SSAID hook bails out → that ONE
- *     binder reply passes through unmodified. Next read sees the
- *     committed (alloc, uid) pair. JVM caches the first SSAID read
- *     per process, so the rare miss is invisible to the app in
- *     practice (one missed read in a sea of cache hits).
- *
- * To make the rare-miss window as small as possible: writer stores
- * uid FIRST, then alloc — so reader observing alloc==target also sees
- * the uid that was paired with it (compiler may still reorder, but
- * that's the intent and AArch64 release-acquire on subsequent loads
- * usually preserves it). For strict correctness `smp_wmb()` between
- * stores would help, but it's also typically unexported in KPM env.
- */
+/* Publication is ordered; deletion leaves a tombstone so probe chains remain intact.
+ * Unknown receivers are rejected by callers instead of being spoofed by default. */
+#define LP_UIDMAP_DELETED 1UL
 
 static void lp_uid_map_set(unsigned long alloc, unsigned int uid)
 {
@@ -209,14 +189,15 @@ static void lp_uid_map_set(unsigned long alloc, unsigned int uid)
     slot = (unsigned int)((alloc >> 4) & (LP_UIDMAP_SIZE - 1));
     for (i = 0; i < LP_UIDMAP_SIZE; i++) {
         idx = (slot + i) & (LP_UIDMAP_SIZE - 1);
-        if (g_uid_by_alloc[idx].alloc == 0 || g_uid_by_alloc[idx].alloc == alloc) {
-            g_uid_by_alloc[idx].uid = uid;        /* publish uid first */
-            g_uid_by_alloc[idx].alloc = alloc;    /* then alloc — reader sees pair */
+        unsigned long cur = READ_ONCE(g_uid_by_alloc[idx].alloc);
+        if (cur == 0 || cur == LP_UIDMAP_DELETED || cur == alloc) {
+            WRITE_ONCE(g_uid_by_alloc[idx].uid, uid);
+            smp_wmb();
+            WRITE_ONCE(g_uid_by_alloc[idx].alloc, alloc);
             g_uid_map_inserts++;
             return;
         }
     }
-    /* Map full — silently drop (should never happen with 2048 slots). */
 }
 
 static unsigned int lp_uid_map_get(unsigned long alloc)
@@ -226,12 +207,13 @@ static unsigned int lp_uid_map_get(unsigned long alloc)
     slot = (unsigned int)((alloc >> 4) & (LP_UIDMAP_SIZE - 1));
     for (i = 0; i < LP_UIDMAP_SIZE; i++) {
         idx = (slot + i) & (LP_UIDMAP_SIZE - 1);
-        if (g_uid_by_alloc[idx].alloc == alloc) {
-            result = g_uid_by_alloc[idx].uid;
+        unsigned long cur = READ_ONCE(g_uid_by_alloc[idx].alloc);
+        if (cur == alloc) {
+            result = READ_ONCE(g_uid_by_alloc[idx].uid);
             g_uid_map_lookups_hit++;
             break;
         }
-        if (g_uid_by_alloc[idx].alloc == 0) {
+        if (cur == 0) {
             g_uid_map_lookups_miss++;
             break;
         }
@@ -246,13 +228,14 @@ static void lp_uid_map_del(unsigned long alloc)
     slot = (unsigned int)((alloc >> 4) & (LP_UIDMAP_SIZE - 1));
     for (i = 0; i < LP_UIDMAP_SIZE; i++) {
         idx = (slot + i) & (LP_UIDMAP_SIZE - 1);
-        if (g_uid_by_alloc[idx].alloc == alloc) {
-            g_uid_by_alloc[idx].alloc = 0;
-            g_uid_by_alloc[idx].uid = 0;
+        if (READ_ONCE(g_uid_by_alloc[idx].alloc) == alloc) {
+            WRITE_ONCE(g_uid_by_alloc[idx].uid, 0);
+            smp_wmb();
+            WRITE_ONCE(g_uid_by_alloc[idx].alloc, LP_UIDMAP_DELETED);
             g_uid_map_evicts++;
             break;
         }
-        if (g_uid_by_alloc[idx].alloc == 0) break;
+        if (READ_ONCE(g_uid_by_alloc[idx].alloc) == 0) break;
     }
 }
 
@@ -485,6 +468,7 @@ static bool try_spoof_cursor_android_id(char *buf, size_t bytes, unsigned int re
 {
     if (!g_profile.android_id_spoof_enabled) return false;
     if (g_profile.android_id_seed[0] == 0) return false;
+    if (recv_uid < 10000 || lp_is_uid_excluded(recv_uid)) return false;
     if (bytes < 40) return false;
 
     /* Locate the ASCII column-name token "android_id". */
@@ -2840,18 +2824,12 @@ void lp_binder_copy_to_buffer_hook(struct binder_alloc *alloc,
         }
     }
 
-    /* ── Block Store cloud_account_id — UID-INDEPENDENT (runs here, BEFORE the
-     * writer/recv filters, exactly like the SSAID/cursor blocks above). The
-     * "cloud_account_id" Map key is Snap-specific, so the string match alone IS
-     * the specificity — we deliberately do NOT gate on recv_uid, because the
-     * alloc→uid map misses ~90% of the time (uidmap_miss ≫ hit) for apps that
-     * opened /dev/binder before the KPM loaded, and that miss (recv_uid==0) was
-     * silently skipping Snap's retrieveBytes reply. Hardcoded key (UTF-16LE first,
-     * UTF-8 fallback), full size range via kmalloc. Self-contained (no companion
-     * key-push). Fires only when capture OR neutralize is armed. */
+    /* Block Store rewrites require a positively identified, non-excluded receiver.
+     * Unknown receivers fail closed; no app may be modified by assumption. */
     if ((g_profile.blockstore_capture_enabled || g_profile.blockstore_neutralize_enabled)
         && from_early && bytes_early >= 34 && bytes_early <= 16384) {
-        unsigned int bsu = lp_uid_map_get((unsigned long)alloc);  /* logging only */
+        unsigned int bsu = lp_uid_map_get((unsigned long)alloc);
+        if (bsu < 10000 || lp_is_uid_excluded(bsu)) return;
         if (bytes_early <= 2048) {
             char bs_buf[2048];
             if (lp_copy_from_user(bs_buf, from_early, bytes_early) > 0
@@ -2893,17 +2871,13 @@ void lp_binder_copy_to_buffer_hook(struct binder_alloc *alloc,
      * sending spoofed values to apps that need real ones (Google
      * packages, system apps, user-added).
      *
-     * Apps that opened /dev/binder BEFORE this KPM loaded won't be in
-     * the map (lookup returns 0). Those fall through — pattern matchers
-     * fire for them. Risk window: during this run, any Google process
-     * still on its pre-KPM-load binder fd may see spoofed replies.
-     * Reboot mitigates: KPM loads from autoload before any app opens
-     * binder, so every alloc→uid mapping is captured from clean slate. */
+     * Unknown receivers also stop the pattern-match phase. This is deliberately
+     * fail-closed: a missed spoof is recoverable, spoofing the wrong UID is not. */
     unsigned int recv_uid_main;
     {
         unsigned long alloc_ptr_filter = (unsigned long)alloc;
         recv_uid_main = lp_uid_map_get(alloc_ptr_filter);
-        if (recv_uid_main != 0 && lp_is_uid_excluded((__u32)recv_uid_main)) return;
+        if (recv_uid_main == 0 || lp_is_uid_excluded((__u32)recv_uid_main)) return;
     }
 
     /* GAID binder re-enable — opt-in UID-gated GAID UUID reply hook.

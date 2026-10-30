@@ -7,7 +7,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        echo "::group::LukePrivacy port (driver + 12 patches + include + defconfig)"
+        echo "::group::LukePrivacy port (driver + patches + include + defconfig)"
         bash "${{ github.action_path }}/port/apply.sh" "${{ github.workspace }}/kernel/common"
         echo "::endgroup::"
     - name: Verify LukePrivacy applied
@@ -22,4 +22,7 @@ runs:
         grep -q 'lp_read_hook'  fs/read_write.c          || { echo "::error::lp_read_hook not patched into fs/read_write.c"; fail=1; }
         grep -q 'lp_ioctl_hook' drivers/android/binder.c || { echo "::error::lp_ioctl_hook not patched into binder.c"; fail=1; }
         grep -q 'lp_binder_copy_to_buffer_hook' drivers/android/binder_alloc.c || { echo "::error::binder_alloc hook missing"; fail=1; }
+        grep -q 'lp_readv_hook' fs/read_write.c || { echo "::error::readv hook missing"; fail=1; }
+        grep -q 'lp_tcp_seq_hidden' net/ipv4/tcp_ipv4.c || { echo "::error::IPv4 seq_show filter missing"; fail=1; }
+        grep -q 'android_id_seed=%s' drivers/lukeprivacy/lukeprivacy.c || { echo "::error::exact identity seed status missing"; fail=1; }
         [ "$fail" = 0 ] && echo "LukePrivacy: driver + hooks + CONFIG all verified present." || exit 1
