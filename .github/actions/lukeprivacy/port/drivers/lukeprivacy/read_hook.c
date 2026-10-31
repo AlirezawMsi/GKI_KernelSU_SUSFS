@@ -594,10 +594,12 @@ long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count)
     void __user *ubuf = (void __user *)buf;
     if (!is_valid_user_ptr(ubuf)) return ret;
 
-    int uid = lp_cur_uid();
-    if (uid < 10000 || lp_is_uid_excluded((__u32)uid)) return ret;
     enum fd_type type = lp_file_type(file);
     if (type == FD_TYPE_NONE) return ret;
+    int uid = lp_cur_uid();
+    /* uname has one release for every app, so excluded app readers must see the
+     * same /proc/version release too. Identity exclusions remain unchanged. */
+    if (uid < 10000 || (lp_is_uid_excluded((__u32)uid) && type != FD_TYPE_PROC_VERSION)) return ret;
 
     /* Size-cap for fixed-size stack-buffer paths. Mount-filter path below
      * handles its own cap. Without this gate a read of e.g. 64 KB from
@@ -1164,7 +1166,7 @@ long lp_readv_hook(struct file *file, const struct iovec __user *vec,
     int uid = lp_cur_uid();
     const char *fake = NULL;
     size_t fake_len = 0;
-    if (uid >= 10000 && !lp_is_uid_excluded(uid)) {
+    if (uid >= 10000 && (!lp_is_uid_excluded(uid) || type == FD_TYPE_PROC_VERSION)) {
         switch (type) {
         case FD_TYPE_PROC_VERSION:
             fake = FAKE_PROC_VERSION;
