@@ -1120,6 +1120,37 @@ static long lp_move_user(void __user *dst, const void __user *src, long n)
     return n;
 }
 
+static void lp_note_fixed_read(enum fd_type type)
+{
+    switch (type) {
+    case FD_TYPE_PROC_VERSION:
+        g_proc_version_spoofed++;
+        if (g_profile.proc_version_uid_redirect_enabled)
+            g_proc_version_uid_repl++;
+        break;
+    case FD_TYPE_PROC_CPUINFO:
+        g_proc_cpuinfo_spoofed++;
+        break;
+    case FD_TYPE_PROC_INET6:
+        g_proc_inet6_spoofed++;
+        break;
+    case FD_TYPE_PROC_BOOT_ID:
+        g_boot_id_spoofed++;
+        break;
+    case FD_TYPE_BATTERY_SERIAL:
+        g_battery_serial_spoofed++;
+        break;
+    case FD_TYPE_DISPLAY_SERIAL:
+        g_display_serial_spoofed++;
+        break;
+    case FD_TYPE_UFS_SERIAL:
+        g_ufs_serial_spoofed++;
+        break;
+    default:
+        break;
+    }
+}
+
 long lp_readv_hook(struct file *file, const struct iovec __user *vec,
                    unsigned long vlen, long ret)
 {
@@ -1131,10 +1162,50 @@ long lp_readv_hook(struct file *file, const struct iovec __user *vec,
     if (type == FD_TYPE_NONE)
         return ret;
     int uid = lp_cur_uid();
-    bool version_spoof = type == FD_TYPE_PROC_VERSION &&
-                         uid >= 10000 && !lp_is_uid_excluded(uid);
-    if (version_spoof && remaining < (long)FAKE_PROC_VERSION_LEN)
-        remaining = (long)FAKE_PROC_VERSION_LEN;
+    const char *fake = NULL;
+    size_t fake_len = 0;
+    if (uid >= 10000 && !lp_is_uid_excluded(uid)) {
+        switch (type) {
+        case FD_TYPE_PROC_VERSION:
+            fake = FAKE_PROC_VERSION;
+            fake_len = FAKE_PROC_VERSION_LEN;
+            break;
+        case FD_TYPE_PROC_CPUINFO:
+            fake = FAKE_PROC_CPUINFO;
+            fake_len = FAKE_PROC_CPUINFO_LEN;
+            break;
+        case FD_TYPE_PROC_INET6:
+            fake = FAKE_PROC_INET6;
+            fake_len = FAKE_PROC_INET6_LEN;
+            break;
+        case FD_TYPE_PROC_BOOT_ID:
+            if (g_profile.boot_id_spoof_enabled && !lp_task_is_preinit()) {
+                refresh_fake_serials();
+                fake = fake_boot_id;
+                fake_len = fake_boot_id_len;
+            }
+            break;
+        case FD_TYPE_BATTERY_SERIAL:
+            refresh_fake_serials();
+            fake = fake_battery_serial;
+            fake_len = fake_battery_serial_len;
+            break;
+        case FD_TYPE_DISPLAY_SERIAL:
+            refresh_fake_serials();
+            fake = fake_display_serial;
+            fake_len = fake_display_serial_len;
+            break;
+        case FD_TYPE_UFS_SERIAL:
+            refresh_fake_serials();
+            fake = fake_ufs_serial;
+            fake_len = fake_ufs_serial_len;
+            break;
+        default:
+            break;
+        }
+    }
+    if (fake && fake_len > 0 && remaining < (long)fake_len)
+        remaining = (long)fake_len;
 
     for (unsigned long i = 0; i < vlen && remaining > 0; i++) {
         struct iovec iov;
@@ -1145,15 +1216,13 @@ long lp_readv_hook(struct file *file, const struct iovec __user *vec,
         if (!iov.iov_base) break;
 
         long after;
-        if (version_spoof) {
-            long left = (long)FAKE_PROC_VERSION_LEN - offset;
+        if (fake && fake_len > 0) {
+            long left = (long)fake_len - offset;
             after = left <= 0 ? 0 : n < left ? n : left;
             if (after > 0) {
-                if (lp_copy_to_user_raw(iov.iov_base, FAKE_PROC_VERSION + offset, after) != after)
+                if (lp_copy_to_user_raw(iov.iov_base, fake + offset, after) != after)
                     return -EFAULT;
-                g_proc_version_spoofed++;
-                if (g_profile.proc_version_uid_redirect_enabled)
-                    g_proc_version_uid_repl++;
+                lp_note_fixed_read(type);
             }
         } else {
             after = lp_read_hook(file, (char __user *)iov.iov_base, n, n);
