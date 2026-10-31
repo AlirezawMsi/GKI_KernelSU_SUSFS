@@ -1133,6 +1133,8 @@ long lp_readv_hook(struct file *file, const struct iovec __user *vec,
     int uid = lp_cur_uid();
     bool version_spoof = type == FD_TYPE_PROC_VERSION &&
                          uid >= 10000 && !lp_is_uid_excluded(uid);
+    if (version_spoof && remaining < (long)FAKE_PROC_VERSION_LEN)
+        remaining = (long)FAKE_PROC_VERSION_LEN;
 
     for (unsigned long i = 0; i < vlen && remaining > 0; i++) {
         struct iovec iov;
