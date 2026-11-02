@@ -355,7 +355,8 @@ extern int is_netunix_fd(int fd, int pid);
 
 static inline bool is_valid_user_ptr(void __user *ptr)
 {
-    return ptr != NULL && ((unsigned long)ptr < 0x0000800000000000UL);
+    /* A fixed cutoff below real ART buffer addresses skipped every rewrite. */
+    return ptr != NULL && access_ok(ptr, 1);
 }
 
 static void replace_mac_address(char *buf, const char *new_mac)
