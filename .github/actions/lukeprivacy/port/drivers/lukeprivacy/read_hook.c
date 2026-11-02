@@ -655,10 +655,13 @@ long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count, l
         return (long)n;
     }
     if (type == FD_TYPE_PROC_CPUINFO) {
-        size_t n = (size_t)ret;
-        if (n > FAKE_PROC_CPUINFO_LEN) n = FAKE_PROC_CPUINFO_LEN;
-        if (n > 0) lp_copy_to_user(ubuf, FAKE_PROC_CPUINFO, n);
-        g_proc_cpuinfo_spoofed++;
+        size_t start = pos > 0 ? (size_t)pos : 0;
+        if (start < FAKE_PROC_CPUINFO_LEN) {
+            size_t n = (size_t)ret;
+            if (n > FAKE_PROC_CPUINFO_LEN - start) n = FAKE_PROC_CPUINFO_LEN - start;
+            if (n > 0) lp_copy_to_user(ubuf, FAKE_PROC_CPUINFO + start, n);
+            g_proc_cpuinfo_spoofed++;
+        }
         return ret;
     }
     if (type == FD_TYPE_PROC_INET6) {
