@@ -24,7 +24,7 @@
  * matches a strict 7-step structural anchor for a sensors_event_t
  * stream — version field, sensor handle, type ∈ {accel/gyro
  * calibrated+uncalibrated}, timestamp range, finite floats, UID gate,
- * matching toggle — we add a per-UID-seeded offset to data[0..2]. The
+ * matching toggle — we add a per-account-seeded offset to data[0..2]. The
  * offset is a static shift (NOT noise dither) so the SDK's sample mean
  * lands on a UID-specific bias rather than the chip's real one.
  *
@@ -223,7 +223,7 @@ static float bump_envelope(void)
  * an artifact. Detection reduces to "is there realistic continuous motion at
  * all" — which the baseline now provides. So no write-hook, no tap envelope. */
 
-/* Magnitude budget for the per-UID seeded offset. Chosen to:
+/* Magnitude budget for the per-account seeded offset. Chosen to:
  *   - sit comfortably above natural inter-chip variance on Pixel 6
  *     (~0.05 m/s² accel between LSM6DSR units) so the spoof actually
  *     produces a bias hash different from the real one,
@@ -235,12 +235,12 @@ static float bump_envelope(void)
  *     ±0.01 rad/s gyro). */
 #define ACCEL_OFFSET_RANGE 0.10f   /* m/s²: offset ∈ [-0.10, +0.10) */
 #define GYRO_OFFSET_RANGE  0.010f  /* rad/s: offset ∈ [-0.010, +0.010) */
-/* Magnetometer per-UID static hard-iron offset + slow micro-drift. The
+/* Magnetometer per-account static hard-iron offset + slow micro-drift. The
  * per-chip bias is the cleanest per-UNIT fingerprint (stable, orientation-
- * independent — see the uncalibrated bias fields). We shift it per-UID and let
+ * independent — see the uncalibrated bias fields). We shift it per-account and let
  * it wander slowly (thermal-like) so it isn't a frozen constant. Range chosen
  * to stay within realistic hard-iron magnitudes (tens of µT). */
-#define MAG_OFFSET_RANGE   40.0f   /* µT: per-UID static offset ∈ [-40, +40) */
+#define MAG_OFFSET_RANGE   40.0f   /* µT: per-account static offset ∈ [-40, +40) */
 #define MAG_DRIFT_STEP     0.05f   /* µT per event: micro random-walk step */
 #define MAG_DRIFT_MAX      4.0f    /* µT: bound on the slow drift wander */
 
@@ -286,11 +286,10 @@ static float u64_to_offset(unsigned long long h, float range)
     return (float)signed_val * scale;
 }
 
-/* Compute the 6-axis per-UID seeded offset table. Called once per
+/* Compute the per-account offset table shared by every reader. Called once per
  * recvfrom invocation where the toggle is on AND the buffer matches the
  * structural anchor. Cheap (12 splitmix64 calls = ~120 cycles). */
-static void derive_offsets(unsigned int uid,
-                           float *off_ax, float *off_ay, float *off_az,
+static void derive_offsets(float *off_ax, float *off_ay, float *off_az,
                            float *off_gx, float *off_gy, float *off_gz,
                            float *off_mx, float *off_my, float *off_mz)
 {
@@ -301,10 +300,8 @@ static void derive_offsets(unsigned int uid,
         *off_mx = *off_my = *off_mz = 0.0f;
         return;
     }
-    /* Mix seed and UID into a base derivation key (same pattern as
-     * SSAID). golden-ratio multiplier from splitmix64 source paper. */
-    unsigned long long base =
-        splitmix64(seed ^ ((unsigned long long)uid * 0x9E3779B97F4A7C15ULL));
+    /* One physical sensor bias per account, not a different bias per app UID. */
+    unsigned long long base = splitmix64(seed);
     *off_ax = u64_to_offset(splitmix64(base ^ MAGIC_ACCEL_X), ACCEL_OFFSET_RANGE);
     *off_ay = u64_to_offset(splitmix64(base ^ MAGIC_ACCEL_Y), ACCEL_OFFSET_RANGE);
     *off_az = u64_to_offset(splitmix64(base ^ MAGIC_ACCEL_Z), ACCEL_OFFSET_RANGE);
@@ -370,7 +367,11 @@ static inline bool is_target_type(int type)
 
 /* ── "Held" motion model ─────────────────────────────────────────────
  *
- * The per-UID bias + jitter + bump layer above uses ADD semantics, which
+ * Production keeps this layer disabled: osc_*_v are Euler rates, not body-frame
+ * angular velocity, and osc_bob_v is a velocity, not acceleration. Do not enable
+ * it without a coherent, measured transformation. Static bias handling is separate.
+ *
+ * The per-account bias + jitter + bump layer above uses ADD semantics, which
  * preserves the REAL gravity orientation: a phone lying flat on a desk
  * keeps gravity on +Z and reads "flat & stationary" no matter how much
  * jitter we add. That is a bot tell (every account created on a perfectly
@@ -704,26 +705,15 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
         return;
     }
 
-    /* Derive per-UID offset table once for this batch. */
+    /* Share one per-account static bias with every reader, including sensor-included
+     * GMS/DroidGuard. A physical IMU has one bias, not a separate bias per app UID. */
     float off_ax, off_ay, off_az, off_gx, off_gy, off_gz, off_mx, off_my, off_mz;
     bool modified = false;
 
     kernel_neon_begin();
-    if (lp_is_uid_excluded(uid)) {
-        /* U18: sensor-included-but-identity-excluded (GMS/DroidGuard) — MOTION
-         * ONLY, zero static bias. derive_offsets seeds from the per-CONTAINER
-         * android_id, so a per-uid bias here would make GMS's chip bias change per
-         * IG account — but a real IMU's bias is device-stable. Zero bias → clean
-         * gravity magnitude + the global time-based held motion + noise floor:
-         * coherent with IG's pose and stable across containers. */
-        off_ax = off_ay = off_az = 0.0f;
-        off_gx = off_gy = off_gz = 0.0f;
-        off_mx = off_my = off_mz = 0.0f;
-    } else {
-        derive_offsets(uid, &off_ax, &off_ay, &off_az,
-                       &off_gx, &off_gy, &off_gz,
-                       &off_mx, &off_my, &off_mz);
-    }
+    derive_offsets(&off_ax, &off_ay, &off_az,
+                   &off_gx, &off_gy, &off_gz,
+                   &off_mx, &off_my, &off_mz);
 
     for (size_t i = 0; i < count; i++) {
         char *e = scratch + i * evt_size;
@@ -804,7 +794,7 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
             modified = true;
         } else if (is_gyro && g_profile.sensor_gyro_spoof_enabled) {
             /* Gyro = the SMOOTH oscillator angular velocities (autocorr ~0.999,
-             * like a real hand) + per-UID static bias + tiny noise floor. The old
+             * like a real hand) + per-account static bias + tiny noise floor. The old
              * per-event white tremor is GONE — white angular velocity means
              * infinite angular acceleration (physically impossible, autocorr ~0). */
             float nfx = rng_float(NOISE_FLOOR_GYRO);
@@ -825,7 +815,7 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
             /* UNCALIBRATED magnetometer (type 14) ONLY. Its bias estimate
              * (data[3..5]) is the cleanest per-UNIT fingerprint (device-stable
              * hard-iron offset). Shift the uncal field (data[0..2]) AND bias by
-             * the SAME per-UID amount + slow drift → the bias rotates while
+             * the SAME per-account amount + slow drift → the bias rotates while
              * calibrated = uncal_field - bias stays EXACTLY consistent (an
              * invariant real hardware always holds; calibrated type 2 is left
              * real). No jitter/bump — real bias is stable, so only the static
@@ -847,7 +837,7 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
             modified = true;
         } else if (is_gravity && g_profile.sensor_accel_spoof_enabled && g_profile.sensor_held_enabled) {
             /* TYPE_GRAVITY (9): fused DC gravity = gravity projected on the SAME oscillator tilt
-             * (osc_pitch/osc_roll) as the accel branch, carrying the SAME per-UID bias (off_a*), so
+             * (osc_pitch/osc_roll) as the accel branch, carrying the SAME per-account bias (off_a*), so
              * |gravity| == |accel|@rest and linear = accel - gravity is exact (no phantom constant).
              * Pure DC: NO noise floor and NO osc_bob_v (those are the AC/motion part -> accel + linear).
              * Held-mode ONLY; non-held leaves gravity untouched (KPM3 pass-through). */
@@ -862,7 +852,7 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
             modified = true;
         } else if (is_linear && g_profile.sensor_accel_spoof_enabled && g_profile.sensor_held_enabled) {
             /* U18 TYPE_LINEAR_ACCELERATION (10) — a channel DroidGuard samples. = accel - gravity = the
-             * AC hand-motion ONLY (zero-mean, NO gravity DC, NO per-UID bias): the vertical bob velocity
+             * AC hand-motion ONLY (zero-mean, NO gravity DC, NO per-account bias): the vertical bob velocity
              * on Z + a small tremor floor on X/Y, matching the accel branch's AC part so the two are
              * coherent. On a benched phone this read dead-flat ~0; now it carries plausible held motion. */
             float nfx = rng_float(NOISE_FLOOR_ACCEL);
