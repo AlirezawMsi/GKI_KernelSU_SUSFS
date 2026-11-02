@@ -4,7 +4,8 @@
  *
  * Ported from KernelPatch KPM. The runtime syscall inline-hook is gone;
  * this logic is now invoked directly from fs/read_write.c via
- *   long lp_read_hook(int fd, char __user *buf, long ret);
+ *   long lp_read_hook(struct file *file, char __user *buf, long ret,
+ *                     size_t count, loff_t pos);
  * called from ksys_read()/ksys_pread64() when vfs_read() returned > 0.
  *
  * Targets:
@@ -584,10 +585,10 @@ static bool lp_netunix_line_hidden(const char *line, size_t ll)
  * vfs_read() (ret > 0). Returns the (possibly shrunk) byte count that the
  * syscall should report to userspace â€” the mount-filter path drops whole
  * lines and MUST propagate the reduced length, so this returns `ret` rather
- * than being void (see call-site note). pread64 shares this path: it passes
- * (fd, buf, ret); the file offset is irrelevant to substring filtering.
+ * than being void (see call-site note). pread64 shares this path and supplies
+ * its explicit start position instead of the shared file position.
  */
-long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count)
+long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count, loff_t pos)
 {
     if (!g_hooks_enabled) return ret;
     if (ret <= 0) return ret;
@@ -677,10 +678,14 @@ long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count)
                 !lp_task_is_preinit()) {
                 refresh_fake_serials();
                 if (fake_boot_id_len > 0) {
-                    size_t n = (size_t)ret;
-                    if (n > (size_t)fake_boot_id_len) n = (size_t)fake_boot_id_len;
-                    if (n > 0) lp_copy_to_user(ubuf, fake_boot_id, n);
-                    g_boot_id_spoofed++;
+                    size_t start = pos > 0 ? (size_t)pos : 0;
+                    if (start < (size_t)fake_boot_id_len) {
+                        size_t n = (size_t)ret;
+                        if (n > (size_t)fake_boot_id_len - start)
+                            n = (size_t)fake_boot_id_len - start;
+                        if (n > 0) lp_copy_to_user(ubuf, fake_boot_id + start, n);
+                        g_boot_id_spoofed++;
+                    }
                 }
             }
         }
@@ -1155,9 +1160,9 @@ static void lp_note_fixed_read(enum fd_type type)
 }
 
 long lp_readv_hook(struct file *file, const struct iovec __user *vec,
-                   unsigned long vlen, long ret)
+                   unsigned long vlen, long ret, loff_t pos)
 {
-    long remaining = ret, written = 0, offset = 0;
+    long remaining = ret, written = 0, offset = pos;
     if (!g_hooks_enabled || ret <= 0 || !file || !vec || vlen == 0)
         return ret;
 

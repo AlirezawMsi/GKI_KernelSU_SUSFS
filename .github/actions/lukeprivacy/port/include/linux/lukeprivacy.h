@@ -31,8 +31,8 @@ void lp_binder_alloc_init_hook(struct binder_alloc *alloc);
 void lp_binder_alloc_release_hook(struct binder_alloc *alloc);
 
 /* vfs read / open / close — fs/read_write.c, fs/open.c */
-long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count);
-long lp_readv_hook(struct file *file, const struct iovec __user *vec, unsigned long vlen, long ret);
+long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count, loff_t pos);
+long lp_readv_hook(struct file *file, const struct iovec __user *vec, unsigned long vlen, long ret, loff_t pos);
 void lp_openat_hook(int dfd, const char __user *filename, int flags, long ret_fd);
 int  lp_openat_deny(const char __user *filename);
 int  lp_stat_deny(const char __user *filename);    /* U14: /proc/config.gz stat -> -ENOENT (app uids) */
@@ -78,8 +78,8 @@ static inline void lp_binder_copy_to_buffer_hook(struct binder_alloc *a, struct 
 static inline void lp_binder_copy_to_buffer_gnss_hook(const void *s, size_t n) { }
 static inline void lp_binder_alloc_init_hook(struct binder_alloc *a) { }
 static inline void lp_binder_alloc_release_hook(struct binder_alloc *a) { }
-static inline long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count) { return ret; }
-static inline long lp_readv_hook(struct file *file, const struct iovec __user *vec, unsigned long vlen, long ret) { return ret; }
+static inline long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count, loff_t pos) { return ret; }
+static inline long lp_readv_hook(struct file *file, const struct iovec __user *vec, unsigned long vlen, long ret, loff_t pos) { return ret; }
 static inline void lp_openat_hook(int d, const char __user *f, int fl, long r) { }
 static inline int  lp_openat_deny(const char __user *f) { return 0; }
 static inline int  lp_stat_deny(const char __user *f) { return 0; }
