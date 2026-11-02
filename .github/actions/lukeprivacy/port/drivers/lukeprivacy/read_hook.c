@@ -1233,7 +1233,7 @@ long lp_readv_hook(struct file *file, const struct iovec __user *vec,
                 lp_note_fixed_read(type);
             }
         } else {
-            after = lp_read_hook(file, (char __user *)iov.iov_base, n, n);
+            after = lp_read_hook(file, (char __user *)iov.iov_base, n, n, offset);
         }
         if (after < 0) return after;
         if (after > 0) {
