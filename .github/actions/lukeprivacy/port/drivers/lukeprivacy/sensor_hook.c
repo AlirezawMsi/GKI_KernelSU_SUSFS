@@ -2,58 +2,17 @@
 /*
  * LukePrivacy KPM — sensor bias spoof hook.
  *
- * Targets: per-chip stationary bias on accelerometer and gyroscope.
- * Per Pixel 6 research (Documents/eng/TIKTOK_DEVICE_IDS_REPORT.md:72-77)
- * fraud SDKs like TikTok's libmetasec_ov sample stationary sensor readings
- * during signup, compute the mean over a short window, and hash the
- * resulting bias vector as a device fingerprint that SURVIVES factory
- * reset (the bias is fused into the LSM6DSR chip's EEPROM at factory
- * calibration time). The chip's factory CSV in
- * /mnt/vendor/persist/sensors/imu6_*_static.csv is unreachable to
- * untrusted_app (SELinux persist_file context), so the only attack
- * surface available to apps is the SensorEventListener stream itself.
+ * The sensorservice BitTube stream is intercepted after recvfrom delivers a
+ * sensors_event_t buffer to an app. A structural size/version/type/handle/
+ * timestamp/finite-value check limits which buffers can be modified; it is not
+ * a proof that every possible non-sensor payload is excluded.
  *
- * Stream architecture (frameworks/native/libs/sensor/BitTube.cpp):
- *   sensorservice ──[sensors_event_t]──> BitTube (socketpair)
- *                                          │
- *                          recv(receiveFd) │  (== recvfrom syscall)
- *                                          ▼
- *                                  App SensorEventQueue
- *
- * We hook __NR_recvfrom in app processes. When the returned buffer
- * matches a strict 7-step structural anchor for a sensors_event_t
- * stream — version field, sensor handle, type ∈ {accel/gyro
- * calibrated+uncalibrated}, timestamp range, finite floats, UID gate,
- * matching toggle — we add a per-account-seeded offset to data[0..2]. The
- * offset is a static shift (NOT noise dither) so the SDK's sample mean
- * lands on a UID-specific bias rather than the chip's real one.
- *
- * PRECISION CONTRACT (matches user requirement "precyzja hooków musi
- * być perfekcyjna"). 7 anchor checks per event, all must pass:
- *
- *   1) recv bytes is multiple of sizeof(sensors_event_t)
- *   2) sensors_event_t.version in known AOSP range [88..128]
- *   3) bytes / version == integer count of events
- *   4) event.type ∈ {1 ACCEL, 4 GYRO, 16 GYRO_UNCAL, 35 ACCEL_UNCAL}
- *   5) event.sensor handle > 0  (real handle)
- *   6) event.timestamp > 1 ns AND < 2^58 ns (~9 years, sane upper bound)
- *   7) event.data[0..2] all finite floats (rejects HAL transient NaN)
- *
- * Plus per-event UID gate: current_uid() ≥ 10000 AND not in exclude
- * list. System sensors (auto-rotate, step counter, screen-off proximity)
- * read with UID < 10000 → bypass → unaffected.
- *
- * False-positive surface: random recvfrom returning bytes % 104 == 0 with
- * the first u32 in [88..128] AND second u32 valid handle AND third u32
- * being one of 4 specific small ints AND timestamp-shaped 8 bytes AND
- * three finite floats. Joint probability negligible.
- *
- * Add semantics (vs replace): event.data[0..2] += offset preserves
- * gravity component on accel-Z (~9.8 stays ~9.8 + offset_z) and motion
- * deltas (rotation reflected through real gyro values + constant bias
- * shift). Replacement would make the device "feel weightless" to the
- * spoofed app — detection vector. ADD keeps all kinematic relationships
- * intact, only the static bias differs from real.
+ * Static offsets are derived once per account and shared by ordinary app
+ * readers and sensor-included GMS. Uncalibrated IMU bias estimates receive the
+ * same static offset, preserving the calibrated relationship without adding
+ * jitter to the estimate. Actual motion passes through; the separate held-motion
+ * model remains disabled. Other sensor channels and service-side decisions
+ * require their own measurements.
  */
 
 #include <linux/types.h>
@@ -114,12 +73,7 @@ static void lp_recvmsg_diag(void __user *umsg, long ret);
 #define SENS_TYPE_GYROSCOPE_UNCALIBRATED     16
 #define SENS_TYPE_ACCELEROMETER_UNCALIBRATED 35
 
-/* Per-UID derivation magic: distinct salts per axis. Reuses the same
- * splitmix64 chain pattern that try_spoof_ssaid_reply uses for SSAID
- * derivation, so the sensor bias and SSAID are cryptographically
- * correlated through android_id_seed (matches the user requirement that
- * "MediaDRM zawsze powstaje z android_id w sposób kryptograficzny" — same
- * principle: all per-device identifiers descend from one root seed). */
+/* Distinct axis salts for the account-shared sensor offset derivation. */
 #define MAGIC_ACCEL_X 0x53454e5341434358ULL  /* "SENSACCX" */
 #define MAGIC_ACCEL_Y 0x53454e5341434359ULL  /* "SENSACCY" */
 #define MAGIC_ACCEL_Z 0x53454e534143435aULL  /* "SENSACCZ" */
@@ -274,10 +228,7 @@ static unsigned long long sensor_parse_seed_u64(const char *seed)
     return v;
 }
 
-/* Map a u64 hash to a float offset in [-range, +range). 17 bits of the
- * hash drive resolution ≈ range / 65536 ≈ 1.5 µ-unit precision, which
- * is far below the chip noise floor — so consecutive UIDs get visibly
- * distinct biases without aliasing. */
+/* Map a u64 hash to a float offset in [-range, +range). */
 static float u64_to_offset(unsigned long long h, float range)
 {
     /* Take 17 bits, treat as signed in [-65536, +65535]. */
@@ -790,6 +741,14 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
                 data[1] = CLAMP(data[1] + off_ay + nfy, -ACCEL_MAX, ACCEL_MAX);
                 data[2] = CLAMP(data[2] + off_az + nfz, -ACCEL_MAX, ACCEL_MAX);
             }
+            if (type == SENS_TYPE_ACCELEROMETER_UNCALIBRATED) {
+                const float offsets[3] = {off_ax, off_ay, off_az};
+                for (int axis = 0; axis < 3; axis++) {
+                    if (is_finite_f(data[axis + 3]))
+                        data[axis + 3] = CLAMP(data[axis + 3] + offsets[axis],
+                                               -ACCEL_MAX, ACCEL_MAX);
+                }
+            }
             g_sensor_accel_spoofed++;
             modified = true;
         } else if (is_gyro && g_profile.sensor_gyro_spoof_enabled) {
@@ -809,6 +768,14 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
             if (is_finite_f(ny0)) data[0] = CLAMP(ny0, -GYRO_MAX, GYRO_MAX);
             if (is_finite_f(ny1)) data[1] = CLAMP(ny1, -GYRO_MAX, GYRO_MAX);
             if (is_finite_f(ny2)) data[2] = CLAMP(ny2, -GYRO_MAX, GYRO_MAX);
+            if (type == SENS_TYPE_GYROSCOPE_UNCALIBRATED) {
+                const float offsets[3] = {off_gx, off_gy, off_gz};
+                for (int axis = 0; axis < 3; axis++) {
+                    if (is_finite_f(data[axis + 3]))
+                        data[axis + 3] = CLAMP(data[axis + 3] + offsets[axis],
+                                               -GYRO_MAX, GYRO_MAX);
+                }
+            }
             g_sensor_gyro_spoofed++;
             modified = true;
         } else if (is_mag && g_profile.sensor_mag_spoof_enabled) {
