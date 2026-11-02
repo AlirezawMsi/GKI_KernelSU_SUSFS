@@ -1445,6 +1445,15 @@ static bool is_mac_utf16(const __u16 *u)
     return u[2] == ':' && u[5] == ':' && u[8] == ':' && u[11] == ':' && u[14] == ':';
 }
 
+static bool is_redacted_mac_utf16(const __u16 *u)
+{
+    static const char redacted[] = "02:00:00:00:00:00";
+    for (int i = 0; i < 17; i++) {
+        if (u[i] != (__u16)redacted[i]) return false;
+    }
+    return true;
+}
+
 static void replace_mac_utf16(__u16 *u, const char *mac)
 {
     for (int i = 0; i < 17 && mac[i]; i++)
@@ -1574,6 +1583,8 @@ static bool try_spoof_wifiinfo(char *buf, size_t bytes)
         if (slen != 17 || off + 4 + 36 > bytes) continue;
         __u16 *u = (__u16 *)(buf + off + 4);
         if (!is_mac_utf16(u)) continue;
+        // Measured Android 16 redaction: preserve both the BSSID and its adjacent SSID.
+        if (is_redacted_mac_utf16(u)) return false;
 
         replace_mac_utf16(u, g_profile.spoof_bssid);   // 1st MAC = BSSID
         bssid_prefix_off = off;
