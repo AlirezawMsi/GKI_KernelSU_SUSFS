@@ -402,7 +402,7 @@ static int lp_configgz_hidden(const char __user *filename)
     return !strcmp(path, "/proc/config.gz");
 }
 
-static int lp_profile_hidden(const char __user *filename)
+static int lp_sensitive_config_hidden(const char __user *filename)
 {
     char path[MAX_PATH_LEN];
     long len;
@@ -413,12 +413,13 @@ static int lp_profile_hidden(const char __user *filename)
     len = lp_copy_from_user(path, filename, sizeof(path) - 1);
     if (len <= 0) return 0;
     path[len] = '\0';
-    return !strcmp(path, "/data/data/com.instagram.android/files/devcfg_profile.json");
+    return !strcmp(path, "/data/data/com.instagram.android/files/devcfg_profile.json")
+            || !strcmp(path, "/data/data/com.instagram.android/files/devcfg_proxy.json");
 }
 
 int lp_openat_deny(const char __user *filename)
 {
-    if (lp_profile_hidden(filename)) return 1;
+    if (lp_sensitive_config_hidden(filename)) return 1;
     if (!lp_configgz_hidden(filename)) return 0;
     if (!g_config_gz_denied)
         pr_info("lukeprivacy: hiding /proc/config.gz from app uid=%d (open)\n", lp_cur_uid());
@@ -450,14 +451,14 @@ static int lp_luke_hidden(const char __user *filename)
  * absent via open" inconsistency). Called from the fs/stat.c call-sites. Also covers /proc/luke (kernel #4). */
 int lp_stat_deny(const char __user *filename)
 {
-    return lp_configgz_hidden(filename) || lp_luke_hidden(filename) || lp_profile_hidden(filename);
+    return lp_configgz_hidden(filename) || lp_luke_hidden(filename) || lp_sensitive_config_hidden(filename);
 }
 
 /* U14: faccessat()/access() deny — same, so access() agrees too. Called from the fs/open.c call-site.
  * Also covers /proc/luke (kernel #4). */
 int lp_access_deny(const char __user *filename)
 {
-    return lp_configgz_hidden(filename) || lp_luke_hidden(filename) || lp_profile_hidden(filename);
+    return lp_configgz_hidden(filename) || lp_luke_hidden(filename) || lp_sensitive_config_hidden(filename);
 }
 
 /* U14: readdir — 1 when /proc/config.gz must be hidden from the CURRENT task's /proc listing (so it does
