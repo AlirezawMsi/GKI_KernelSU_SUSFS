@@ -63,6 +63,7 @@ void lp_prctl_hook(void);
  * spoof-target readers; 0 to keep. Inert until net_hide is armed. */
 int lp_tcp_seq_hidden(const struct sock *sk);
 int lp_unix_seq_hidden(const struct sock *sk);
+bool lp_netdiag_relay_hidden(const struct sock *sk);
 
 #else /* !CONFIG_LUKEPRIVACY */
 
@@ -95,6 +96,7 @@ static inline void lp_touch_capture_hook(struct input_handle *h, unsigned int t,
 static inline void lp_prctl_hook(void) { }
 static inline int lp_tcp_seq_hidden(const struct sock *sk) { return 0; }
 static inline int lp_unix_seq_hidden(const struct sock *sk) { return 0; }
+static inline bool lp_netdiag_relay_hidden(const struct sock *sk) { return false; }
 
 #endif /* CONFIG_LUKEPRIVACY */
 

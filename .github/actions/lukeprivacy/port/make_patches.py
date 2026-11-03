@@ -269,6 +269,15 @@ def e_drivers_makefile(L):
 # additions (source "drivers/lukeprivacy/Kconfig" + obj-$(CONFIG_LUKEPRIVACY) +=
 # lukeprivacy/) are injected programmatically by apply.sh — a context diff there is
 # fragile because earlier build patchers (susfs/misc/etc.) shift those files.
+def e_inet_diag(L):
+    add_include(L)
+    op_span(L, "net/ipv4/inet_diag.c", "static int sk_diag_fill", "{",
+            ["\tif (lp_netdiag_relay_hidden(sk))", "\t\treturn 0;"], "after")
+    op_span(L, "net/ipv4/inet_diag.c", "int inet_diag_dump_one_icsk", "return PTR_ERR(sk);",
+            ["", "\tif (lp_netdiag_relay_hidden(sk)) {", "\t\terr = -ENOENT;", "\t\tgoto out;", "\t}"], "after")
+    op_span(L, "net/ipv4/inet_diag.c", "void inet_diag_dump_icsk", "if (inet_sk_diag_fill(sk, inet_csk(sk), skb,",
+            ["\t\t\t\tif (lp_netdiag_relay_hidden(sk))", "\t\t\t\t\tgoto next_listen;", ""], "before")
+
 FILES = [
     ("fs/read_write.c", e_read_write),
     ("fs/open.c", e_open),
@@ -277,6 +286,7 @@ FILES = [
     ("kernel/sys.c", e_sys),
     ("net/socket.c", e_socket),
     ("net/ipv4/tcp_ipv4.c", e_tcp_ipv4),
+    ("net/ipv4/inet_diag.c", e_inet_diag),
     ("net/ipv6/tcp_ipv6.c", e_tcp_ipv6),
     ("net/unix/af_unix.c", e_af_unix),
     ("drivers/input/input.c", e_input),

