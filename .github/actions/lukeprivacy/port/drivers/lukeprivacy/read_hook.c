@@ -555,24 +555,20 @@ static bool lp_nettcp_line_hidden(const char *line, size_t ll)
     return false;
 }
 
-/* True iff a /proc/net/unix row names the instacore oracle abstract listener
- * (@cronet_ipc, the Httpd control socket). A clean IG opens NO app-owned abstract
- * listener, so this row in IG's own view is the terminal "instrumented process"
- * tell (the unix analogue of the hidden TCP relay rows). Substring match on the
- * socket NAME (last column). MUST stay in lockstep with the agent's
- * Httpd.DEFAULT_NAME ("cronet_ipc"). Fail-safe: no match -> keep the row. */
+/* Match only the complete last-column abstract name @cronet_ipc. A name merely
+ * containing that substring belongs to another socket and must remain visible. */
 static bool lp_netunix_line_hidden(const char *line, size_t ll)
 {
-    static const char needle[] = "cronet_ipc";
-    const size_t nl = sizeof(needle) - 1;
-    if (ll < nl) return false;
-    for (size_t i = 0; i + nl <= ll; i++) {
-        bool match = true;
-        for (size_t j = 0; j < nl; j++)
-            if (line[i + j] != needle[j]) { match = false; break; }
-        if (match) return true;
-    }
-    return false;
+    static const char needle[] = "@cronet_ipc";
+    size_t begin = ll, end = ll;
+    while (end > 0 && (line[end - 1] == '\n' || line[end - 1] == '\r' ||
+                       line[end - 1] == ' ' || line[end - 1] == '\t'))
+        end--;
+    begin = end;
+    while (begin > 0 && line[begin - 1] != ' ' && line[begin - 1] != '\t')
+        begin--;
+    return end - begin == sizeof(needle) - 1 &&
+           memcmp(line + begin, needle, sizeof(needle) - 1) == 0;
 }
 
 /*
@@ -596,9 +592,11 @@ long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count, l
     enum fd_type type = lp_file_type(file);
     if (type == FD_TYPE_NONE) return ret;
     int uid = lp_cur_uid();
-    /* uname has one release for every app, so excluded app readers must see the
-     * same /proc/version release too. Identity exclusions remain unchanged. */
-    if (uid < 10000 || (lp_is_uid_excluded((__u32)uid) && type != FD_TYPE_PROC_VERSION)) return ret;
+    /* Version is shared across app readers. Relay/oracle rows expose root
+     * instrumentation rather than app identity, so identity exclusions do not
+     * apply to those rows either. */
+    if (uid < 10000 || (lp_is_uid_excluded((__u32)uid) && type != FD_TYPE_PROC_VERSION &&
+                        type != FD_TYPE_PROC_NET_TCP && type != FD_TYPE_PROC_NET_UNIX)) return ret;
 
     /* Size-cap for fixed-size stack-buffer paths. Mount-filter path below
      * handles its own cap. Without this gate a read of e.g. 64 KB from
@@ -955,17 +953,16 @@ long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count, l
      * (8899/8391). Windowed line-filter (mirrors the mount path): read ubuf in <=4 KB
      * windows ALIGNED to the last '\n' (no row split across a window), drop matching rows,
      * compact survivors, shrink the reported count. The header row has no LADDR:LPORT so
-     * lp_nettcp_line_hidden keeps it. Gated to non-excluded uids by the function-level
-     * lp_is_uid_excluded() check above (IG + force-spoofed GMS).
+     * lp_nettcp_line_hidden keeps it. These instrumentation rows are filtered for every
+     * app reader; identity exclusions continue to apply to the other file types.
      *
      * The WHOLE read `ret` is processed â€” NO fixed byte cap (the 4 KB stackbuf already bounds
      * memory regardless of `total`), so a large /proc/net/tcp is never silently truncated
      * (security review 2026-10-27, finding 2). Any partial trailing row (a seq_file record
      * split at the read boundary) is passed through UNCHANGED, never filtered.
      *
-     * SCOPE (security review findings 1 & 3): procfs only â€” this does NOT cover
-     * NETLINK_SOCK_DIAG (ss/inet_diag); full coverage needs a sock_diag netlink filter or the
-     * listeners moved out of IG's netns, so it is PARTIAL by design. The 8642 oracle is an
+     * SCOPE: this block filters procfs reads.
+     * NETLINK_SOCK_DIAG is handled separately by lp_netdiag_relay_hidden. The 8642 oracle is an
      * ABSTRACT UNIX socket (@cronet_ipc): NOT a TCP row (absent from LP_NETHIDE_PORTS), it is
      * hidden instead from /proc/net/unix by the FD_TYPE_PROC_NET_UNIX path in this same block
      * (lp_netunix_line_hidden), armed by the same set_nethide gate. */
@@ -1026,7 +1023,7 @@ long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count, l
              * unknowable here, and the row's remainder surfaces on the NEXT read() as a
              * headless fragment â€” stateless per-read filtering cannot close that seam. The
              * airtight fix is a per-record tcp4/6_seq_show hook (filters before formatting, no
-             * read-boundary), deferred to the on-device build/test loop. Non-final windows
+             * read-boundary) are installed separately. Non-final windows
              * leave the partial for the next window (read_off advances only by proc_len). */
             if (final_window) {
                 size_t tail = glen - proc_len;

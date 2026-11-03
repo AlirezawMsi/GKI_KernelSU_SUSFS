@@ -13,8 +13,8 @@
  *
  * This layer closes that seam at the SOURCE: the kernel's per-record seq_show
  * callbacks (tcp6_seq_show, unix_seq_show) call these predicates BEFORE formatting
- * a record, and skip the whole record if it is a relay/oracle socket for a
- * spoof-target reader. No bytes are ever emitted, so no read boundary can split
+ * a record, and skip the whole record if it is a relay/oracle socket for an
+ * app reader. No bytes are ever emitted, so no read boundary can split
  * what was never written. The read_hook path stays as the catch-all (and the sole
  * cover for /proc/net/tcp v4, where no relay row has been observed).
  *
@@ -68,27 +68,18 @@ static const u16 LP_SEQ_PORTS[] = { 0x22C3 /* 8899 CONNECT relay */, 0x20C7 /* 8
 unsigned int g_tcp_seq_hidden = 0;
 unsigned int g_unix_seq_hidden = 0;
 
-/* True iff the CURRENT reader is a spoof target that must not see relay rows.
- * Mirrors the read_hook.c gate exactly: armed only when net_hide is enabled, and
- * excluded uids (root/system + the configured list) always read the real table. */
+/* These rows expose root instrumentation, not an app identity. Hide them from
+ * every app reader, including UIDs excluded from identity spoofing. Root and
+ * system readers retain the real table, and the filter is inert until armed. */
 static bool lp_seq_reader_hidden(void)
 {
-	unsigned int uid;
-
-	if (!g_hooks_enabled)
+	if (!g_hooks_enabled || !g_profile.net_hide_enabled)
 		return false;
-	if (!g_profile.net_hide_enabled)
-		return false;
-	uid = from_kuid(&init_user_ns, current_uid());
-	if (uid < 10000)
-		return false;
-	if (lp_is_uid_excluded(uid))
-		return false;
-	return true;
+	return from_kuid(&init_user_ns, current_uid()) >= 10000;
 }
 
 /* /proc/net/tcp6 (tcp6_seq_show): drop the record iff its bound local port is a
- * relay port for a spoof-target reader. Returns 1 to skip, 0 to keep. */
+ * relay port for an app reader. Returns 1 to skip, 0 to keep. */
 int lp_tcp_seq_hidden(const struct sock *sk)
 {
 	u16 lport;
@@ -109,15 +100,14 @@ int lp_tcp_seq_hidden(const struct sock *sk)
 	return 0;
 }
 
-/* /proc/net/unix (unix_seq_show): drop the record iff its bound address contains
- * the oracle needle ("cronet_ipc") for a spoof-target reader. Returns 1 to skip,
- * 0 to keep. Lock-free u->addr read — see SAFETY note at top. */
+/* /proc/net/unix (unix_seq_show): drop only the exact abstract oracle address.
+ * Lock-free u->addr read — see SAFETY note at top. */
 int lp_unix_seq_hidden(const struct sock *sk)
 {
 	const struct unix_sock *u;
 	const struct unix_address *addr;
 	const char *name;
-	int plen, off;
+	int plen;
 	static const char needle[] = LP_SEQ_UNIX_NEEDLE;
 	const int nlen = (int)sizeof(needle) - 1;
 
@@ -131,29 +121,13 @@ int lp_unix_seq_hidden(const struct sock *sk)
 	if (!addr)
 		return 0;
 
-	/* Path bytes available after the sun_family header (abstract sockets carry a
-	 * leading NUL then the label, matching how unix_seq_show prints '@'+name). */
 	plen = (int)addr->len - (int)offsetof(struct sockaddr_un, sun_path);
-	if (plen < nlen || plen > (int)sizeof(addr->name->sun_path))
+	if (plen != nlen + 1 || plen > (int)sizeof(addr->name->sun_path))
 		return 0;
 	name = addr->name->sun_path;
-
-	/* Substring match over the path bytes — lockstep with read_hook.c
-	 * lp_netunix_line_hidden(), which matches the same needle on the formatted row. */
-	for (off = 0; off + nlen <= plen; off++) {
-		int j;
-		bool m = true;
-
-		for (j = 0; j < nlen; j++) {
-			if (name[off + j] != needle[j]) {
-				m = false;
-				break;
-			}
-		}
-		if (m) {
-			g_unix_seq_hidden++;
-			return 1;
-		}
+	if (name[0] == '\0' && memcmp(name + 1, needle, nlen) == 0) {
+		g_unix_seq_hidden++;
+		return 1;
 	}
 	return 0;
 }
