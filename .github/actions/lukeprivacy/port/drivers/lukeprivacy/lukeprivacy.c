@@ -1437,7 +1437,7 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
             "location_enabled=%d lat_i=%lld lon_i=%lld\n"
             "pretend_sim_enabled=%d cell_info_enabled=%d\n"
             "android_id_spoof=%d seed_set=%d android_id_seed=%s boot_id_spoof=%d adb_hide=%d\n"
-            "sensor_accel_spoof=%d sensor_gyro_spoof=%d\n"
+            "sensor_accel_spoof=%d sensor_gyro_spoof=%d sensor_mag_spoof=%d\n"
             "gaid_binder=%d hostbridge=%d proc_ver_uid=%d timezone_binder=%d\n"
             "net_hide=%d excluded_count=%d force_count=%d\n",
             g_hooks_enabled,
@@ -1458,6 +1458,7 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
             g_profile.adb_hide_enabled,
             g_profile.sensor_accel_spoof_enabled,
             g_profile.sensor_gyro_spoof_enabled,
+            g_profile.sensor_mag_spoof_enabled,
             g_profile.gaid_binder_reenabled,
             g_profile.hostprocess_bridge_enabled,
             g_profile.proc_version_uid_redirect_enabled,
