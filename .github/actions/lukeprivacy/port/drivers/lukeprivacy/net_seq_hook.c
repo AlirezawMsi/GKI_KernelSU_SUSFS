@@ -2,30 +2,15 @@
 /*
  * LukePrivacy - per-record /proc/net seq_show row filter (net_hide airtight layer).
  *
- * The read_hook.c net_hide path filters /proc/net/tcp{,6} and /proc/net/unix at
- * the READ choke-point: it drops whole relay-listener / @cronet_ipc rows from the
- * userspace buffer AFTER seq_file formatted them. That path is proven and live,
- * but it has one irreducible residual (documented in read_hook.c): a row can be
- * split across a read() syscall boundary so the local-port / name field lands in
- * the NEXT read as a headless fragment, which stateless per-read filtering cannot
- * positively identify. A determined reader that chunks /proc/net/tcp6 to force a
- * boundary inside a relay row could recover the tail.
- *
- * This layer closes that seam at the SOURCE: the kernel's per-record seq_show
- * callbacks (tcp6_seq_show, unix_seq_show) call these predicates BEFORE formatting
- * a record, and skip the whole record if it is a relay/oracle socket for an
- * app reader. No bytes are ever emitted, so no read boundary can split
- * what was never written. The read_hook path stays as the catch-all (and the sole
- * cover for /proc/net/tcp v4, where no relay row has been observed).
+ * Filter TCP and UNIX socket records before tcp4_seq_show, tcp6_seq_show, or
+ * unix_seq_show formats them. This preserves unrelated socket rows, avoids
+ * read-boundary leaks, and lets TCP filtering use actual socket ownership.
+ * inet_diag filtering is implemented separately in net_diag_hook.c.
  *
  * SAFETY (single remote device — a wrong dereference here panics the kernel):
- *  - TCP: we read ONLY sk->sk_num (the bound local port). It lives in
- *    struct sock_common, the shared first member of struct sock,
- *    inet_timewait_sock AND request_sock, so it is valid for every seq_show
- *    record state (LISTEN / ESTABLISHED / TIME_WAIT / NEW_SYN_RECV) without the
- *    state-dependent inet_sk() dereference that WOULD be wrong on a timewait /
- *    request socket. This is exactly why tcp6_seq_show itself reads sk->sk_state
- *    through a plain `struct sock *` before it knows the real type.
+ *  - TCP: sk_num lives in sock_common and is valid for every seq_show record
+ *    state. sock_i_uid uses sk_callback_lock and handles sockets without an
+ *    inode, so no state-dependent inet_sk() dereference is needed.
  *  - UNIX: u->addr is published once at bind via smp_store_release and is
  *    immutable until the socket is destroyed; the seq iteration pins the socket,
  *    so it cannot be freed under us. We READ_ONCE() the pointer (NULL-or-valid,
@@ -54,11 +39,8 @@
 #include "profile.h"
 #include "lp_log.h"
 
-/* Relay/oracle identities to hide, MUST stay in lockstep with:
- *   - read_hook.c LP_NETHIDE_PORTS + lp_netunix_line_hidden() (the read-path twin),
- *   - ProxyRelay.java PORT(8899)/TPORT(8391), and the @cronet_ipc oracle name.
- * Duplicated locally (2 ports + 1 name) to avoid a cross-TU symbol export, matching
- * the splitmix64 duplication idiom in read_hook.c. */
+/* Relay/oracle identities to hide, MUST stay in lockstep with root_relay.cpp,
+ * net_diag_hook.c, and the root daemon's @cronet_ipc oracle name. */
 static const u16 LP_SEQ_PORTS[] = { 0x22C3 /* 8899 CONNECT relay */, 0x20C7 /* 8391 SNI relay */ };
 #define LP_SEQ_NPORTS ((int)(sizeof(LP_SEQ_PORTS) / sizeof(LP_SEQ_PORTS[0])))
 #define LP_SEQ_UNIX_NEEDLE "cronet_ipc"
@@ -78,9 +60,9 @@ static bool lp_seq_reader_hidden(void)
 	return from_kuid(&init_user_ns, current_uid()) >= 10000;
 }
 
-/* /proc/net/tcp6 (tcp6_seq_show): drop the record iff its bound local port is a
- * relay port for an app reader. Returns 1 to skip, 0 to keep. */
-int lp_tcp_seq_hidden(const struct sock *sk)
+/* /proc/net/tcp{,6}: hide root-owned relay sockets only. Another UID may
+ * legitimately bind the same port on a different local address. */
+int lp_tcp_seq_hidden(struct sock *sk)
 {
 	u16 lport;
 	int i;
@@ -88,6 +70,8 @@ int lp_tcp_seq_hidden(const struct sock *sk)
 	if (sk == SEQ_START_TOKEN || !sk)
 		return 0;
 	if (!lp_seq_reader_hidden())
+		return 0;
+	if (!uid_eq(sock_i_uid(sk), GLOBAL_ROOT_UID))
 		return 0;
 
 	lport = sk->sk_num;   /* host-order bound local port; sock_common, all states */

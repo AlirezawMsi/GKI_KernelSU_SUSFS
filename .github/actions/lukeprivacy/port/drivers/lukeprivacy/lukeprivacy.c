@@ -836,7 +836,7 @@ static int parse_profile_cmd(const char *args)
         return 0;
     }
     /* /proc/net/tcp{,6} relay-listener row hide (instacore oracle/proxy ports 8899/8391).
-     * Enable gate only — the ports are hardcoded in read_hook.c LP_NETHIDE_PORTS. Default
+     * Enable gate only — the ports are hardcoded in net_seq_hook.c/net_diag_hook.c. Default
      * off (static init); armed per-session by kpm_apply.sh `set_nethide:1`. */
     if (!strncmp(args, "set_nethide:", 12)) {
         g_profile.net_hide_enabled = (args[12] == '1');

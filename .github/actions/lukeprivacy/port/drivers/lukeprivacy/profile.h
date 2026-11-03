@@ -269,16 +269,11 @@ struct spoof_profile {
      * within one boot session (a linking signal), only changing on reboot. */
     bool boot_id_spoof_enabled;
 
-    /* /proc/net/tcp + /proc/net/tcp6 listener-row hide. When set, read_hook drops any
-     * row whose LOCAL port is an instacore relay port (8899 CONNECT / 8391 transparent SNI)
-     * from the table delivered to spoof-target uids (IG, and force-spoofed GMS) — so IG's
-     * own /proc/self/net/tcp no longer exposes the localhost listener that a clean IG never
-     * opens (detectability audit 2026-10-27, the terminal "instrumented process" tell; the
-     * listener is a TCP socket in IG's shared netns, so moving its owner-uid to the root
-     * companion does NOT hide the row — only a kernel row-filter like this does). Root/system
-     * (excluded) read the real table. Default off; armed per-session by kpm_apply.sh
-     * set_nethide:1. Ports hardcoded in read_hook.c LP_NETHIDE_PORTS — keep in lockstep with
-     * ProxyRelay.java PORT(8899)/TPORT(8391). */
+    /* Hide root instrumentation from app readers in procfs and inet_diag.
+     * TCP matches root-owned relay ports; UNIX matches the exact abstract oracle.
+     * Identity exclusions do not expose these root-owned rows. Root/system readers
+     * retain the real tables. Default off; armed per-session by kpm_apply.sh
+     * set_nethide:1. Port/name matching lives in net_seq_hook.c/net_diag_hook.c. */
     bool net_hide_enabled;
 
     /* Timezone binder hook. Companion already handles persist.sys.timezone
@@ -399,9 +394,6 @@ extern unsigned int g_hostbridge_repl;
 /* /proc/version UID-gated redirect counter. Defined in read_hook.c. */
 extern unsigned int g_proc_version_uid_repl;
 
-/* /proc/net/tcp listener-row filter counter (rows dropped). Defined in read_hook.c. */
-extern unsigned int g_net_tcp_filtered;
-extern unsigned int g_net_unix_filtered;
 
 /* Timezone binder hook counter. Defined in binder_hook.c. */
 extern unsigned int g_timezone_repl;

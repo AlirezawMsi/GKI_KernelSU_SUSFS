@@ -78,8 +78,8 @@ enum fd_type {
     FD_TYPE_SOC0_REVISION,
     FD_TYPE_SOC0_SERIAL,
     FD_TYPE_PROC_MOUNTS,
-    /* /proc/net/tcp{,6} â€” drop instacore relay listener rows (local port 8899/8391) for
-     * spoof-target uids. MUST mirror openat_hook.c's enum (shared fdâ†’type integer mapping). */
+    /* Network records are filtered by seq_show before formatting. These types
+     * pass successful reads through unchanged. MUST mirror openat_hook.c's enum. */
     FD_TYPE_PROC_NET_TCP,
     /* GMS in-process read of gservices.db -> rewrite the checkin android_id
      * value. MUST be the last entry, matching openat_hook.c's enum. */
@@ -87,8 +87,6 @@ enum fd_type {
     /* files/checkin_id_token = "<android_id>:<security_token>"; rewrite the
      * android_id (digits before ':'). MUST match openat_hook.c's enum order. */
     FD_TYPE_CHECKIN_TOKEN,
-    /* /proc/net/unix â€” drop the oracle @cronet_ipc abstract-listener row for
-     * spoof-target uids. Appended last; MUST match openat_hook.c's enum order. */
     FD_TYPE_PROC_NET_UNIX,
 };
 
@@ -205,11 +203,6 @@ unsigned int g_gsf_file_aid_spoofed = 0;
  * mirrors g_proc_version_spoofed when the flag is set.
  * Defined here to satisfy the extern in profile.h. */
 unsigned int g_proc_version_uid_repl = 0;
-
-/* /proc/net/tcp{,6} listener-row filter: count of relay-port rows dropped. */
-unsigned int g_net_tcp_filtered = 0;
-/* /proc/net/unix oracle-row filter: count of @cronet_ipc rows dropped. */
-unsigned int g_net_unix_filtered = 0;
 
 /* splitmix64 â€” same primitive used in binder_hook.c for per-UID
  * derivation. Keeping the implementation local here avoids a cross-TU
@@ -503,74 +496,6 @@ static bool lp_task_is_preinit(void)
     }
 }
 
-/* instacore relay listener ports to hide from /proc/net/tcp{,6} for spoof-target uids:
- * 8899 (0x22C3, CONNECT relay) + 8391 (0x20C7, transparent SNI relay). A clean IG opens
- * NO localhost listeners, so these rows in IG's own (shared) netns are the terminal
- * "instrumented process" tell â€” and because the socket lives in the shared netns, moving
- * its owner to the root companion does not hide the row; only a kernel row-filter does.
- * Keep in lockstep with ProxyRelay.java PORT(8899)/TPORT(8391). */
-static const u16 LP_NETHIDE_PORTS[] = { 0x22C3, 0x20C7 };
-#define LP_NETHIDE_NPORTS ((int)(sizeof(LP_NETHIDE_PORTS) / sizeof(LP_NETHIDE_PORTS[0])))
-
-/* Parse exactly 4 hex chars at [p, end) â†’ value, or -1 on any non-hex / short buffer
- * (fail-safe: the caller keeps the line when the port can't be positively parsed). */
-static int lp_hex4(const char *p, const char *end)
-{
-    int v = 0;
-    if (p + 4 > end) return -1;
-    for (int i = 0; i < 4; i++) {
-        char c = p[i];
-        int d;
-        if (c >= '0' && c <= '9') d = c - '0';
-        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
-        else return -1;
-        v = (v << 4) | d;
-    }
-    return v;
-}
-
-/* True iff a /proc/net/tcp{,6} row's LOCAL port is an instacore relay port to hide.
- * Kernel row format (tcp4/6_seq_show): "<sp><sl>: <LADDR>:<LPORT> <RADDR>:<RPORT> <ST>...".
- * LADDR is 8 hex (v4) or 32 hex (v6); LPORT is the 4 hex after the SECOND ':' (the first
- * ':' ends the sl field). Any parse miss â†’ false (KEEP the row): never drop a line we
- * cannot positively identify, so the header and all non-relay rows always survive. */
-static bool lp_nettcp_line_hidden(const char *line, size_t ll)
-{
-    const char *p = line;
-    const char *end = line + ll;
-    while (p < end && *p != ':') p++;      /* first ':' ends "  N" sl field */
-    if (p >= end) return false;            /* header / no colon -> keep */
-    p++;
-    while (p < end && *p != ':') p++;      /* second ':' = LADDR:LPORT separator */
-    if (p >= end) return false;
-    p++;
-    {
-        int port = lp_hex4(p, end);
-        if (port < 0) return false;
-        if (p + 4 >= end || p[4] != ' ') return false;  /* LPORT must end at a field space */
-        for (int i = 0; i < LP_NETHIDE_NPORTS; i++)
-            if ((u16)port == LP_NETHIDE_PORTS[i]) return true;
-    }
-    return false;
-}
-
-/* Match only the complete last-column abstract name @cronet_ipc. A name merely
- * containing that substring belongs to another socket and must remain visible. */
-static bool lp_netunix_line_hidden(const char *line, size_t ll)
-{
-    static const char needle[] = "@cronet_ipc";
-    size_t begin = ll, end = ll;
-    while (end > 0 && (line[end - 1] == '\n' || line[end - 1] == '\r' ||
-                       line[end - 1] == ' ' || line[end - 1] == '\t'))
-        end--;
-    begin = end;
-    while (begin > 0 && line[begin - 1] != ' ' && line[begin - 1] != '\t')
-        begin--;
-    return end - begin == sizeof(needle) - 1 &&
-           memcmp(line + begin, needle, sizeof(needle) - 1) == 0;
-}
-
 /*
  * lp_read_hook â€” VFS read() choke-point.
  *
@@ -592,11 +517,9 @@ long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count, l
     enum fd_type type = lp_file_type(file);
     if (type == FD_TYPE_NONE) return ret;
     int uid = lp_cur_uid();
-    /* Version is shared across app readers. Relay/oracle rows expose root
-     * instrumentation rather than app identity, so identity exclusions do not
-     * apply to those rows either. */
-    if (uid < 10000 || (lp_is_uid_excluded((__u32)uid) && type != FD_TYPE_PROC_VERSION &&
-                        type != FD_TYPE_PROC_NET_TCP && type != FD_TYPE_PROC_NET_UNIX)) return ret;
+    /* uname has one release for every app, so excluded app readers must see the
+     * same /proc/version release too. Identity exclusions remain unchanged. */
+    if (uid < 10000 || (lp_is_uid_excluded((__u32)uid) && type != FD_TYPE_PROC_VERSION)) return ret;
 
     /* Size-cap for fixed-size stack-buffer paths. Mount-filter path below
      * handles its own cap. Without this gate a read of e.g. 64 KB from
@@ -949,118 +872,11 @@ long lp_read_hook(struct file *file, char __user *buf, long ret, size_t count, l
         return ret;
     }
 
-    /* /proc/net/tcp{,6}: drop ENTIRE rows whose LOCAL port is an instacore relay port
-     * (8899/8391). Windowed line-filter (mirrors the mount path): read ubuf in <=4 KB
-     * windows ALIGNED to the last '\n' (no row split across a window), drop matching rows,
-     * compact survivors, shrink the reported count. The header row has no LADDR:LPORT so
-     * lp_nettcp_line_hidden keeps it. These instrumentation rows are filtered for every
-     * app reader; identity exclusions continue to apply to the other file types.
-     *
-     * The WHOLE read `ret` is processed â€” NO fixed byte cap (the 4 KB stackbuf already bounds
-     * memory regardless of `total`), so a large /proc/net/tcp is never silently truncated
-     * (security review 2026-10-27, finding 2). Any partial trailing row (a seq_file record
-     * split at the read boundary) is passed through UNCHANGED, never filtered.
-     *
-     * SCOPE: this block filters procfs reads.
-     * NETLINK_SOCK_DIAG is handled separately by lp_netdiag_relay_hidden. The 8642 oracle is an
-     * ABSTRACT UNIX socket (@cronet_ipc): NOT a TCP row (absent from LP_NETHIDE_PORTS), it is
-     * hidden instead from /proc/net/unix by the FD_TYPE_PROC_NET_UNIX path in this same block
-     * (lp_netunix_line_hidden), armed by the same set_nethide gate. */
-    if (type == FD_TYPE_PROC_NET_TCP || type == FD_TYPE_PROC_NET_UNIX) {
-        const bool is_unix = (type == FD_TYPE_PROC_NET_UNIX);  /* name-match vs port-match */
-        size_t total = (size_t)ret;
-        char stackbuf[MAX_BUF_SIZE];
-        size_t read_off = 0, write_off = 0;
-        bool any_dropped = false;
-
-        while (read_off < total) {
-            size_t want = total - read_off;
-            if (want > MAX_BUF_SIZE) want = MAX_BUF_SIZE;
-            long got = lp_copy_from_user(stackbuf, ubuf + read_off, want);
-            if (got <= 0) break;
-            size_t glen = (size_t)got;
-            bool final_window = (read_off + glen >= total);
-
-            /* Align to the last '\n' so no row is split across this window. */
-            size_t proc_len = glen;
-            {
-                bool found = false;
-                for (size_t i = glen; i > 0; i--) {
-                    if (stackbuf[i - 1] == '\n') { proc_len = i; found = true; break; }
-                }
-                if (!found) proc_len = glen;   /* no '\n' in the window (not expected for tcp) */
-            }
-
-            /* Filter complete rows in [0, proc_len). */
-            size_t wp = 0, ls = 0;
-            for (size_t i = 0; i <= proc_len; i++) {
-                if (i == proc_len || stackbuf[i] == '\n') {
-                    if (i == proc_len && ls == i) break;
-                    size_t le = (i == proc_len) ? i : (i + 1);  /* include '\n' */
-                    size_t ll = le - ls;
-
-                    if (is_unix ? lp_netunix_line_hidden(stackbuf + ls, ll)
-                                : lp_nettcp_line_hidden(stackbuf + ls, ll)) {
-                        any_dropped = true;
-                    } else {
-                        if (wp != ls) {
-                            for (size_t j = 0; j < ll; j++) stackbuf[wp + j] = stackbuf[ls + j];
-                        }
-                        wp += ll;
-                    }
-                    ls = le;
-                    if (i == proc_len) break;
-                }
-            }
-            if (wp > 0) lp_copy_to_user(ubuf + write_off, stackbuf, wp);
-            write_off += wp;
-
-            /* Bytes after the last '\n' are a partial row (seq_file split at the read
-             * boundary). On the FINAL window: if the partial already exposes a HIDDEN local
-             * port, DROP it so a split hidden row cannot leak (security review 2026-10-27);
-             * otherwise pass it through UNCHANGED so a non-hidden row is never truncated.
-             * RESIDUAL: a split that falls BEFORE the local-port field leaves the port
-             * unknowable here, and the row's remainder surfaces on the NEXT read() as a
-             * headless fragment â€” stateless per-read filtering cannot close that seam. The
-             * airtight fix is a per-record tcp4/6_seq_show hook (filters before formatting, no
-             * read-boundary) are installed separately. Non-final windows
-             * leave the partial for the next window (read_off advances only by proc_len). */
-            if (final_window) {
-                size_t tail = glen - proc_len;
-                if (tail > 0) {
-                    if (is_unix ? lp_netunix_line_hidden(stackbuf + proc_len, tail)
-                                : lp_nettcp_line_hidden(stackbuf + proc_len, tail)) {
-                        any_dropped = true;   /* split hidden row visible here -> suppress */
-                    } else {
-                        lp_copy_to_user(ubuf + write_off, stackbuf + proc_len, tail);
-                        write_off += tail;
-                    }
-                }
-                break;
-            }
-            if (proc_len == 0) break;   /* safety: no forward progress possible */
-            read_off += proc_len;
-        }
-
-        if (any_dropped) {
-            /* Zero the freed tail so a reader that ignores read()'s shrunk return and
-             * scans its whole buffer can't see the stale relay-listener rows. */
-            if (write_off < total) {
-                char zeros[256];
-                for (size_t j = 0; j < sizeof(zeros); j++) zeros[j] = 0;
-                size_t z = write_off;
-                while (z < total) {
-                    size_t c = total - z;
-                    if (c > sizeof(zeros)) c = sizeof(zeros);
-                    lp_copy_to_user(ubuf + z, zeros, c);
-                    z += c;
-                }
-            }
-            ret = (long)write_off;   /* propagate shrunk count to caller */
-            if (is_unix) g_net_unix_filtered++; else g_net_tcp_filtered++;
-        }
+    /* Socket records are filtered before formatting by tcp4_seq_show,
+     * tcp6_seq_show and unix_seq_show. Byte-level filtering cannot determine
+     * socket ownership or reconstruct a record split across a read boundary. */
+    if (type == FD_TYPE_PROC_NET_TCP || type == FD_TYPE_PROC_NET_UNIX)
         return ret;
-    }
 
     char cbuf[MAX_BUF_SIZE];
     long copied = lp_copy_from_user(cbuf, ubuf, ret);
