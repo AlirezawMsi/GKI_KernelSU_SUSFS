@@ -281,27 +281,6 @@ static unsigned long long splitmix64(unsigned long long x)
     return x ^ (x >> 31);
 }
 
-/* Derive per-UID 32-byte MediaDRM deviceUniqueId from the same seed that
- * drives SSAID. Real Android: Widevine TA derives device unique id from
- * device-bound key material that INCLUDES android_id, so apps reading
- * both expect a cryptographic pair, not two independent values. The
- * SSAID hook (try_spoof_ssaid_reply) already publishes per-UID values
- * descended from g_profile.android_id_seed; deriving mediadrm from the
- * same root closes the cross-correlation gap the static
- * g_profile.mediadrm_id couldn't address.
- *
- * 4× splitmix64 chains seeded with distinct per-quarter salts give
- * 256 bits of deterministic high-entropy output. Same UID + same seed =
- * same bytes across reads (the stable-read invariant Widevine needs).
- * Different UID = different bytes (matches our per-app fingerprint
- * model — even though real Android emits the same mediadrm to every
- * app, fraud SDKs hashing the pair (android_id, mediadrm) would also
- * see a different pair per app on real Android because android_id IS
- * per-app SSAID since Android 8; keeping the pair per-app keeps both
- * sides cryptographically consistent for any UID a fraud SDK observes).
- *
- * Pure u64 arithmetic + integer memcpy — no FPU, no allocation, no
- * yield points → safe to call from any binder hook context. */
 /* FNV-1a 64-bit hash of a NUL-terminated string. Keys per-package
  * derivation off the stable package name instead of the UID. */
 static unsigned long long hash_str_u64(const char *s)
@@ -322,26 +301,6 @@ static unsigned long long lp_ident_key(unsigned int uid)
     const char *pkg = lp_pkg_for_uid((__u32)uid);
     if (pkg && pkg[0]) return hash_str_u64(pkg);
     return (unsigned long long)uid * 0x9E3779B97F4A7C15ULL;
-}
-
-static void derive_per_uid_mediadrm(unsigned long long seed,
-                                    unsigned int uid,
-                                    unsigned char out[32])
-{
-    unsigned long long base =
-        splitmix64(seed ^ lp_ident_key(uid));
-    /* "MDRM" + quarter index. Distinct salts ensure each 8-byte chunk
-     * has independent entropy. */
-    unsigned long long w0 = splitmix64(base ^ 0x4d44524d00000001ULL);
-    unsigned long long w1 = splitmix64(base ^ 0x4d44524d00000002ULL);
-    unsigned long long w2 = splitmix64(base ^ 0x4d44524d00000003ULL);
-    unsigned long long w3 = splitmix64(base ^ 0x4d44524d00000004ULL);
-    for (int i = 0; i < 8; i++) {
-        out[i]      = (unsigned char)(w0 >> (i * 8));
-        out[i + 8]  = (unsigned char)(w1 >> (i * 8));
-        out[i + 16] = (unsigned char)(w2 >> (i * 8));
-        out[i + 24] = (unsigned char)(w3 >> (i * 8));
-    }
 }
 
 /* Derive per-UID SSAID (16 lowercase hex chars) from profile seed.
@@ -1300,16 +1259,6 @@ static bool __maybe_unused is_uuid_format_u16(const __u16 *data, __s32 len)
     return true;
 }
 
-static bool is_mediadrm_reply(const char *buf, size_t bytes)
-{
-    if (bytes != 40) return false;
-    __s32 status = *(__s32 *)(buf);
-    __s32 arr_len = *(__s32 *)(buf + 4);
-    if (status != 0) return false;
-    if (arr_len != 32) return false;
-    return true;
-}
-
 // Location parcel field masks (from AOSP Location.java)
 #define LOC_HAS_ALTITUDE                    (1 << 0)
 #define LOC_HAS_SPEED                       (1 << 1)
@@ -1405,17 +1354,6 @@ static int try_detect_location_parcel(const char *buf, size_t bytes, size_t *out
     }
 
     return 0;
-}
-
-static void hex_to_bytes(const char *hex, unsigned char *out, size_t out_len)
-{
-    for (size_t i = 0; i < out_len && hex[i*2] && hex[i*2+1]; i++) {
-        char h = hex[i*2];
-        char l = hex[i*2+1];
-        unsigned char hv = (h >= 'a') ? (h - 'a' + 10) : ((h >= 'A') ? (h - 'A' + 10) : (h - '0'));
-        unsigned char lv = (l >= 'a') ? (l - 'a' + 10) : ((l >= 'A') ? (l - 'A' + 10) : (l - '0'));
-        out[i] = (hv << 4) | lv;
-    }
 }
 
 /* Parse "AA:BB:CC:DD:EE:FF" → out[0..5] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}.
@@ -3275,77 +3213,10 @@ void lp_binder_copy_to_buffer_hook(struct binder_alloc *alloc,
         }
     }
 
-    /* PlanPrecision A2 (2026-05-11): MediaDRM `deviceUniqueId` spoof.
-     *
-     * Shape anchor (is_mediadrm_reply): 40 B parcel, status==0, len==32 — that
-     * matches ANY length-prefixed 32-byte byte-array reply, not just MediaDRM.
-     * SHA-256 hashes, AES-256 keys, HMAC-SHA256 outputs, ECDSA P-256 r/s
-     * components, random nonces returned through binder by native crypto SDKs
-     * (rootbeer, Datadog SDK, GuardSquare DexGuard runtime, AppSealing, etc.)
-     * all share this shape. Reply parcels do NOT carry the interface
-     * descriptor (that lives in the request side via writeInterfaceToken),
-     * so we can't gate by IMediaDrm descriptor directly without
-     * request/reply correlation state tracking.
-     *
-     * Mitigation: require the recipient UID to be a known app (in the
-     * alloc→uid map, UID >= 10000). System processes that route crypto
-     * blobs between mediaserver and other services don't match (they're
-     * UID < 10000 or unmapped). Apps reading MediaDRM.getPropertyByteArray
-     * naturally have their alloc tracked by the binder driver hook.
-     *
-     * Per-UID derivation (preferred): when android_id_seed is set,
-     * derive_per_uid_mediadrm() produces a 32-byte deviceUniqueId by
-     * chaining splitmix64 from the same seed SSAID uses. That keeps
-     * mediadrm cryptographically correlated with the per-UID SSAID a
-     * fraud SDK reads alongside — real Android's Widevine TA derives
-     * both from device-bound key material, so independent values
-     * (which the legacy static path produced) would be a cross-check
-     * fingerprint vector by themselves.
-     *
-     * Static fallback: when android_id_seed isn't set yet (companion
-     * APK hasn't pushed it, or older companion version), fall back to
-     * the hex-encoded g_profile.mediadrm_id. Backward compat — the
-     * deviceUniqueId still gets spoofed, just not correlated.
-     *
-     * Stability: derivation is pure u64 arithmetic, deterministic, no
-     * yield. Same UID across reads → same bytes (Widevine's stable-read
-     * invariant — apps reading deviceUniqueId twice in a session
-     * expect the same value). Different UID → different bytes
-     * (per-app fingerprint surface; matches the SSAID per-UID model). */
-    /* Toggle gate: companion APK signals "mediadrm hook OFF" by pushing
-     * empty `set_mediadrm:` (clears g_profile.mediadrm_id[0]). When off,
-     * real hardware Widevine HMAC must pass through — DO NOT use the
-     * seed path here, because android_id_seed is set for SSAID/sensor
-     * even when mediadrm is intentionally disabled. Toggling mediadrm
-     * via the static-id presence preserves the legacy disable path. */
-    if (is_mediadrm_reply(buf, bytes) && g_profile.mediadrm_id[0]) {
-        unsigned long mdrm_alloc = (unsigned long)alloc;
-        unsigned int mdrm_recv_uid = lp_uid_map_get(mdrm_alloc);
-        if (mdrm_recv_uid >= 10000) {
-            unsigned char new_id[32];
-            bool have_id = false;
-            /* Preferred path: per-UID derivation from android_id_seed.
-             * Cryptographically correlates with SSAID (same seed root). */
-            if (g_profile.android_id_seed[0] != 0) {
-                unsigned long long seed = parse_seed_u64(g_profile.android_id_seed);
-                if (seed != 0) {
-                    derive_per_uid_mediadrm(seed, mdrm_recv_uid, new_id);
-                    have_id = true;
-                }
-            }
-            /* Fallback: companion-pushed static hex (legacy / no-seed). */
-            if (!have_id) {
-                hex_to_bytes(g_profile.mediadrm_id, new_id, 32);
-                have_id = true;
-            }
-            if (have_id) {
-                memcpy(buf + 8, new_id, 32);
-                lp_copy_to_user((void __user *)from, buf, bytes);
-                g_binder_mediadrm_spoofed++;
-                return;
-            }
-        }
-    }
+    /* MediaDRM replies are not rewritten here. A 40-byte status/length parcel
+     * does not identify a property, and device/provisioning IDs are shared
+     * across apps. Only Instagram's property-aware Java/NDK hooks replace named
+     * values; GMS remains genuine. */
 
     // WiFi spoof (WifiInfo + getScanResults) — USER apps only, NEVER system.
     // System apps (uid < 10000), excluded UIDs, and unresolved (0) UIDs are
