@@ -195,6 +195,21 @@ def e_socket(L):
     add_include(L)
     op_span(L, "net/socket.c", "int __sys_recvfrom(", "fput_light(sock->file, fput_needed);",
             ["\tlp_recv_hook(fd, ubuf, size, err, false);"], "after")
+    op_span(L, "net/socket.c", "int __sys_listen(", "err = sock->ops->listen(sock, backlog);",
+            ["\tlp_relay_listener(sock->sk);"], "after")
+    op_span(L, "net/socket.c", "static void __sock_release(", "sock->ops->release(sock);",
+            ["\t\tlp_relay_socket_closed(sock->sk);"], "before")
+
+def e_inet_csk(L):
+    add_include(L)
+    op_span(L, "net/ipv4/inet_connection_sock.c", "struct sock *inet_csk_accept(",
+            "inet_init_csk_locks(newsk);", ["\t\tlp_relay_accepted(sk, newsk);"], "before")
+
+def e_tcp_input(L):
+    add_include(L)
+    op_span(L, "net/ipv4/tcp_input.c", "int tcp_conn_request(",
+            "req = inet_reqsk_alloc(rsk_ops, sk, !want_cookie);",
+            ["\tlp_relay_request(sk, req_to_sk(req));"], "after")
 
 def e_tcp_ipv4(L):
     add_include(L)
@@ -286,6 +301,8 @@ FILES = [
     ("kernel/sys.c", e_sys),
     ("net/socket.c", e_socket),
     ("net/ipv4/tcp_ipv4.c", e_tcp_ipv4),
+    ("net/ipv4/inet_connection_sock.c", e_inet_csk),
+    ("net/ipv4/tcp_input.c", e_tcp_input),
     ("net/ipv4/inet_diag.c", e_inet_diag),
     ("net/ipv6/tcp_ipv6.c", e_tcp_ipv6),
     ("net/unix/af_unix.c", e_af_unix),

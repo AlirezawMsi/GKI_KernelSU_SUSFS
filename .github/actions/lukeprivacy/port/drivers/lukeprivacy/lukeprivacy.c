@@ -836,7 +836,7 @@ static int parse_profile_cmd(const char *args)
         return 0;
     }
     /* /proc/net/tcp{,6} relay-listener row hide (instacore oracle/proxy ports 8899/8391).
-     * Enable gate only — the ports are hardcoded in net_seq_hook.c/net_diag_hook.c. Default
+     * Enable gate only — the ports are hardcoded in net_diag_hook.c. Default
      * off (static init); armed per-session by kpm_apply.sh `set_nethide:1`. */
     if (!strncmp(args, "set_nethide:", 12)) {
         g_profile.net_hide_enabled = (args[12] == '1');
@@ -1421,7 +1421,7 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
     }
 
     if (!strcmp(args, "status")) {
-        char buf[768];
+        char buf[2048];
         __s64 lat_i = lp_dbl_to_scaled(&g_profile.latitude, 1000000);
         __s64 lon_i = lp_dbl_to_scaled(&g_profile.longitude, 1000000);
         snprintf(buf, sizeof(buf),
@@ -1436,7 +1436,7 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
             "android_id_spoof=%d seed_set=%d android_id_seed=%s boot_id_spoof=%d adb_hide=%d\n"
             "sensor_accel_spoof=%d sensor_gyro_spoof=%d sensor_mag_spoof=%d\n"
             "gaid_binder=%d hostbridge=%d proc_ver_uid=%d timezone_binder=%d\n"
-            "net_hide=%d excluded_count=%d force_count=%d\n",
+            "net_hide=%d relay_cookie_overflow=%d excluded_count=%d force_count=%d\n",
             g_hooks_enabled,
             g_profile.imei,
             g_profile.serial,
@@ -1461,6 +1461,7 @@ static long lp_ctl(const char *args, char *out_msg, int outlen)
             g_profile.proc_version_uid_redirect_enabled,
             g_profile.timezone_binder_enabled,
             g_profile.net_hide_enabled,
+            g_relay_cookie_overflow,
             g_excluded_uids_count,
             g_force_spoof_count);
         compat_copy_to_user(out_msg, buf, strlen(buf) + 1);

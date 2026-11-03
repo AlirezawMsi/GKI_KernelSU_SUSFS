@@ -270,10 +270,10 @@ struct spoof_profile {
     bool boot_id_spoof_enabled;
 
     /* Hide root instrumentation from app readers in procfs and inet_diag.
-     * TCP matches root-owned relay ports; UNIX matches the exact abstract oracle.
-     * Identity exclusions do not expose these root-owned rows. Root/system readers
-     * retain the real tables. Default off; armed per-session by kpm_apply.sh
-     * set_nethide:1. Port/name matching lives in net_seq_hook.c/net_diag_hook.c. */
+     * TCP matches cookies registered by the root relay listener and its connections;
+     * UNIX matches the exact abstract oracle. Identity exclusions do not expose these
+     * rows. Root/system readers retain the real tables. Default off; armed per-session
+     * by kpm_apply.sh set_nethide:1. Matching lives in net_diag_hook.c/net_seq_hook.c. */
     bool net_hide_enabled;
 
     /* Timezone binder hook. Companion already handles persist.sys.timezone
@@ -393,6 +393,9 @@ extern unsigned int g_hostbridge_repl;
 
 /* /proc/version UID-gated redirect counter. Defined in read_hook.c. */
 extern unsigned int g_proc_version_uid_repl;
+
+/* Relay-cookie registry exhaustion. Defined in net_diag_hook.c. */
+extern unsigned int g_relay_cookie_overflow;
 
 
 /* Timezone binder hook counter. Defined in binder_hook.c. */

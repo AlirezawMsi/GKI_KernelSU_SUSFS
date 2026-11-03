@@ -1,0 +1,10 @@
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -7048,6 +7048,7 @@
+ 	}
+ 
+ 	req = inet_reqsk_alloc(rsk_ops, sk, !want_cookie);
++	lp_relay_request(sk, req_to_sk(req));
+ 	if (!req)
+ 		goto drop;
+ 

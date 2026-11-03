@@ -1,0 +1,10 @@
+--- a/net/ipv4/inet_connection_sock.c
++++ b/net/ipv4/inet_connection_sock.c
+@@ -732,6 +732,7 @@
+ 		reqsk_put(req);
+ 
+ 	if (newsk)
++		lp_relay_accepted(sk, newsk);
+ 		inet_init_csk_locks(newsk);
+ 
+ 	return newsk;

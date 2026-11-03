@@ -63,6 +63,10 @@ void lp_prctl_hook(void);
 int lp_tcp_seq_hidden(struct sock *sk);
 int lp_unix_seq_hidden(const struct sock *sk);
 bool lp_netdiag_relay_hidden(struct sock *sk);
+void lp_relay_listener(struct sock *sk);
+void lp_relay_request(struct sock *listener, struct sock *request);
+void lp_relay_accepted(struct sock *listener, struct sock *accepted);
+void lp_relay_socket_closed(struct sock *sk);
 
 #else /* !CONFIG_LUKEPRIVACY */
 
@@ -96,6 +100,10 @@ static inline void lp_prctl_hook(void) { }
 static inline int lp_tcp_seq_hidden(struct sock *sk) { return 0; }
 static inline int lp_unix_seq_hidden(const struct sock *sk) { return 0; }
 static inline bool lp_netdiag_relay_hidden(struct sock *sk) { return false; }
+static inline void lp_relay_listener(struct sock *sk) { }
+static inline void lp_relay_request(struct sock *listener, struct sock *request) { }
+static inline void lp_relay_accepted(struct sock *listener, struct sock *accepted) { }
+static inline void lp_relay_socket_closed(struct sock *sk) { }
 
 #endif /* CONFIG_LUKEPRIVACY */
 
