@@ -94,12 +94,9 @@ struct spoof_profile g_profile = {
     .country_iso = "",
     .operator_name = "",
     .phone_number = "",
-    /* Empty string = hook deactivated. Hook in binder_hook.c gates on
-     * mediadrm_id[0] != 0; if companion APK never pushes a real value
-     * (toggle off, fresh boot before Save), TikTok / Widevine apps see the
-     * REAL hardware HMAC instead of garbage zeros. Previous default
-     * "0000..." had [0]='0'!=0 so hook fired and wrote 32 raw 0x00 bytes —
-     * that's a stronger spoof tell than the real value. */
+    /* Retained for MediaDRM configuration and reversible probes. No generic
+     * binder reply rewrite is installed; named Java/NDK hooks use the agent
+     * profile and their own off-list. */
     .mediadrm_id = "",
     /* try_hide_dev_settings's adb-hide gate. Default off — module fully
      * passive on fresh load until companion APK Save pushes the toggle

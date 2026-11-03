@@ -7,12 +7,8 @@
 #define MAX_PROP_LEN 128
 
 struct spoof_profile {
-    /* android_id field removed 2026-05-09 — KPM no longer takes part in
-     * android_id spoofing (Android 8+ serves apps a per-package SSAID
-     * from settings_ssaid.xml that any binder-side spoof can't reach
-     * cleanly). The companion APK still keeps an android_id value in
-     * profile.json as the seed for MediaDRM HMAC derivation, but it
-     * never reaches the kernel. */
+    /* The separate android_id_seed below is the root for per-container
+     * derivations, including the agent's named MediaDRM hooks. */
     char gsf_id[17];
     char advertising_id[37];
     char firebase_id[37];
@@ -211,19 +207,16 @@ struct spoof_profile {
      * stays ~9.8) and motion deltas while shifting the per-chip stationary
      * bias every app reads.
      *
-     * Seed reuses android_id_seed (companion APK pushes one seed; SSAID,
-     * MediaDRM, and sensor offsets share the root for cryptographic
-     * correlation — matches the way Widevine TA derives mediadrm from
-     * android_id). Defaults to false; toggled on Save in the companion
-     * APK; resets to false on every KPM init (boot autoload). */
+     * Seed reuses android_id_seed for SSAID and sensor offsets. Defaults to
+     * false; toggled on Save in the companion APK; resets to false on every KPM
+     * init (boot autoload). */
     bool sensor_accel_spoof_enabled;
     bool sensor_gyro_spoof_enabled;
 
-    /* Magnetometer (TYPE_MAGNETIC_FIELD 2 + UNCALIBRATED 14) per-UID hard-iron
-     * bias spoof + slow micro-drift. Closes a per-UNIT fingerprint gap: the
-     * uncalibrated bias fields are the cleanest device-stable signal and Snap
-     * samples both types. Default OFF on KPM init; companion pushes it (Snap
-     * default ON). */
+    /* Magnetometer (TYPE_MAGNETIC_FIELD 2 + UNCALIBRATED 14) per-account
+     * hard-iron bias shared across readers. Event-driven drift was removed;
+     * genuine temporal variation is retained. Default OFF on KPM init;
+     * companion pushes it (Snap default ON). */
     bool sensor_mag_spoof_enabled;
 
     /* "Held" motion model layer (opt-in, requires accel/gyro spoof ON).
