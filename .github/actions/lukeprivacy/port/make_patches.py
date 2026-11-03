@@ -203,7 +203,10 @@ def e_socket(L):
 def e_inet_csk(L):
     add_include(L)
     op_span(L, "net/ipv4/inet_connection_sock.c", "struct sock *inet_csk_accept(",
-            "inet_init_csk_locks(newsk);", ["\t\tlp_relay_accepted(sk, newsk);"], "before")
+            "if (newsk)", ["\tif (newsk) {"], "replace")
+    op_span(L, "net/ipv4/inet_connection_sock.c", "struct sock *inet_csk_accept(",
+            "inet_init_csk_locks(newsk);",
+            ["\t\tlp_relay_accepted(sk, newsk);", "\t\tinet_init_csk_locks(newsk);", "\t}"], "replace")
 
 def e_tcp_input(L):
     add_include(L)
