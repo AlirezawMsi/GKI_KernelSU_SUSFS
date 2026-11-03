@@ -189,14 +189,9 @@ static float bump_envelope(void)
  *     ±0.01 rad/s gyro). */
 #define ACCEL_OFFSET_RANGE 0.10f   /* m/s²: offset ∈ [-0.10, +0.10) */
 #define GYRO_OFFSET_RANGE  0.010f  /* rad/s: offset ∈ [-0.010, +0.010) */
-/* Magnetometer per-account static hard-iron offset + slow micro-drift. The
- * per-chip bias is the cleanest per-UNIT fingerprint (stable, orientation-
- * independent — see the uncalibrated bias fields). We shift it per-account and let
- * it wander slowly (thermal-like) so it isn't a frozen constant. Range chosen
- * to stay within realistic hard-iron magnitudes (tens of µT). */
+/* Magnetometer per-account static hard-iron offset. One physical bias is shared
+ * by every reader of the same sensor event. */
 #define MAG_OFFSET_RANGE   40.0f   /* µT: per-account static offset ∈ [-40, +40) */
-#define MAG_DRIFT_STEP     0.05f   /* µT per event: micro random-walk step */
-#define MAG_DRIFT_MAX      4.0f    /* µT: bound on the slow drift wander */
 
 /* SplitMix64 — same generator used by try_spoof_ssaid_reply. Identical
  * implementation kept here to avoid binder_hook.c → sensor_hook.c
@@ -262,25 +257,6 @@ static void derive_offsets(float *off_ax, float *off_ay, float *off_az,
     *off_mx = u64_to_offset(splitmix64(base ^ MAGIC_MAG_X),   MAG_OFFSET_RANGE);
     *off_my = u64_to_offset(splitmix64(base ^ MAGIC_MAG_Y),   MAG_OFFSET_RANGE);
     *off_mz = u64_to_offset(splitmix64(base ^ MAGIC_MAG_Z),   MAG_OFFSET_RANGE);
-}
-
-/* Magnetometer slow micro-drift — a bounded random walk so the spoofed
- * hard-iron bias wanders slowly (thermal-like) instead of sitting as a frozen
- * constant. Tiny per-event steps → the tester's short-window Δ stays ~0 (looks
- * stable) while it drifts a few µT over a long session (realistic). */
-static float mag_drift_x = 0.0f, mag_drift_y = 0.0f, mag_drift_z = 0.0f;
-
-static void mag_drift_update(void)
-{
-    mag_drift_x += rng_float(MAG_DRIFT_STEP);
-    mag_drift_y += rng_float(MAG_DRIFT_STEP);
-    mag_drift_z += rng_float(MAG_DRIFT_STEP);
-    if (mag_drift_x >  MAG_DRIFT_MAX) mag_drift_x =  MAG_DRIFT_MAX;
-    if (mag_drift_x < -MAG_DRIFT_MAX) mag_drift_x = -MAG_DRIFT_MAX;
-    if (mag_drift_y >  MAG_DRIFT_MAX) mag_drift_y =  MAG_DRIFT_MAX;
-    if (mag_drift_y < -MAG_DRIFT_MAX) mag_drift_y = -MAG_DRIFT_MAX;
-    if (mag_drift_z >  MAG_DRIFT_MAX) mag_drift_z =  MAG_DRIFT_MAX;
-    if (mag_drift_z < -MAG_DRIFT_MAX) mag_drift_z = -MAG_DRIFT_MAX;
 }
 
 static inline bool is_finite_f(float f)
@@ -779,19 +755,14 @@ void lp_recv_hook(int fd, void __user *ubuf, size_t len, long ret, bool is_msg)
             g_sensor_gyro_spoofed++;
             modified = true;
         } else if (is_mag && g_profile.sensor_mag_spoof_enabled) {
-            /* UNCALIBRATED magnetometer (type 14) ONLY. Its bias estimate
-             * (data[3..5]) is the cleanest per-UNIT fingerprint (device-stable
-             * hard-iron offset). Shift the uncal field (data[0..2]) AND bias by
-             * the SAME per-account amount + slow drift → the bias rotates while
-             * calibrated = uncal_field - bias stays EXACTLY consistent (an
-             * invariant real hardware always holds; calibrated type 2 is left
-             * real). No jitter/bump — real bias is stable, so only the static
-             * offset + slow drift apply. */
+            /* UNCALIBRATED magnetometer (type 14) ONLY. Shift the uncal field
+             * and bias by the same static per-account amount, preserving
+             * calibrated = uncal_field - bias. Every reader of this event sees
+             * the same bias; event-driven drift would make that impossible. */
             #define MAG_MAX 4900.0f  /* µT — above Earth (~50) + strong-magnet slack */
-            mag_drift_update();
-            float mx = off_mx + mag_drift_x;
-            float my = off_my + mag_drift_y;
-            float mz = off_mz + mag_drift_z;
+            float mx = off_mx;
+            float my = off_my;
+            float mz = off_mz;
             data[0] = CLAMP(data[0] + mx, -MAG_MAX, MAG_MAX);
             data[1] = CLAMP(data[1] + my, -MAG_MAX, MAG_MAX);
             data[2] = CLAMP(data[2] + mz, -MAG_MAX, MAG_MAX);
