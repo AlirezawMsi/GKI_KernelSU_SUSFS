@@ -262,11 +262,8 @@ static void derive_decimal_from_seed(unsigned long long base, char *out, int n)
     }
 }
 
-/* Build fake_*_serial once per profile change. Called from lp_read_hook
- * lazily when seed transitions from emptyâ†’non-empty OR changes; we
- * detect "stale" by remembering the first byte of the seed we last
- * derived from. */
-static char last_seen_seed_byte = 0;
+/* Cache derived values by the complete 64-bit profile seed. */
+static unsigned long long last_seen_seed = 0;
 static void refresh_fake_serials(void)
 {
     if (!g_profile.android_id_seed[0]) {
@@ -274,13 +271,13 @@ static void refresh_fake_serials(void)
         fake_display_serial_len = 0;
         fake_ufs_serial_len = 0;
         fake_boot_id_len = 0;
-        last_seen_seed_byte = 0;
-        return;
-    }
-    if (last_seen_seed_byte == g_profile.android_id_seed[0] && fake_battery_serial_len > 0) {
+        last_seen_seed = 0;
         return;
     }
     unsigned long long seed = parse_seed_u64(g_profile.android_id_seed);
+    if (last_seen_seed == seed && fake_battery_serial_len > 0) {
+        return;
+    }
 
     /* Battery serial: 24 hex (Maxim MAX1720x format is mixed alnum but
      * 24 hex is a plausible vendor encoding â€” apps don't validate
@@ -339,7 +336,7 @@ static void refresh_fake_serials(void)
         fake_boot_id_len = j; /* 36 UUID chars + '\n' = 37 */
     }
 
-    last_seen_seed_byte = g_profile.android_id_seed[0];
+    last_seen_seed = seed;
 }
 
 /* Shared fdâ†’type table lives in openat_hook.c (it owns the openat/close
