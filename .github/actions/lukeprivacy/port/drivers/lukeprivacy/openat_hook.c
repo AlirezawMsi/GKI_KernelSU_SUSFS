@@ -404,8 +404,25 @@ static int lp_configgz_hidden(const char __user *filename)
 
 static int lp_sensitive_config_hidden(const char __user *filename)
 {
+    static const char *const files[] = {
+        "/data/data/com.instagram.android/files/devcfg_profile.json",
+        "/data/data/com.instagram.android/files/devcfg_proxy.json",
+        "/data/data/com.instagram.android/files/devcfg_spoof_off.txt",
+        "/data/data/com.instagram.android/files/devcfg_bootid",
+        "/data/data/com.instagram.android/files/devcfg_wlan0_mac",
+        "/data/data/com.instagram.android/files/devcfg_dummy0_mac",
+        "/data/data/com.instagram.android/files/devcfg_if_inet6",
+        "/data/data/com.instagram.android/files/devcfg_area_props.txt",
+        "/data/data/com.instagram.android/files/devcfg_spoof_off",
+        "/data/data/com.instagram.android/files/devcfg_trace_on",
+        "/data/data/com.instagram.android/files/devcfg_passive_trace_on",
+        "/data/data/com.instagram.android/files/devcfg_native_trace_on",
+        "/data/data/com.instagram.android/files/devcfg_native_on",
+    };
+    static const char no_backup[] = "/data/data/com.instagram.android/no_backup/.sc3";
     char path[MAX_PATH_LEN];
     long len;
+    size_t i;
 
     if (!g_hooks_enabled) return 0;
     if (!filename) return 0;
@@ -413,8 +430,9 @@ static int lp_sensitive_config_hidden(const char __user *filename)
     len = lp_copy_from_user(path, filename, sizeof(path) - 1);
     if (len <= 0) return 0;
     path[len] = '\0';
-    return !strcmp(path, "/data/data/com.instagram.android/files/devcfg_profile.json")
-            || !strcmp(path, "/data/data/com.instagram.android/files/devcfg_proxy.json");
+    for (i = 0; i < ARRAY_SIZE(files); i++)
+        if (!strcmp(path, files[i])) return 1;
+    return !strncmp(path, no_backup, sizeof(no_backup) - 1);
 }
 
 int lp_openat_deny(const char __user *filename)
